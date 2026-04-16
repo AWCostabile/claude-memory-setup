@@ -5,6 +5,15 @@
 > pause and wait for the user's answer before continuing — do not skip them or substitute
 > defaults without asking. Everything else can be executed autonomously.
 >
+> **Re-running this guide on an existing setup is safe.** Every phase is designed to be
+> idempotent: check first, skip or merge if already present, never overwrite blindly. If
+> something is already configured correctly, confirm it and move on — don't replace it
+> unless the user explicitly asks.
+>
+> **Platform note:** This guide targets macOS, Linux, and Windows. Shell commands use bash
+> syntax (Claude Code runs hooks via bash on all platforms, including Windows via Git Bash).
+> Platform differences are called out inline where they exist.
+>
 > **Before starting**, introduce yourself briefly:
 > "I'm going to set up a four-system persistent memory architecture for your Claude Code
 > environment — system-wide, so future sessions across all your projects start with full
@@ -135,10 +144,12 @@ Run each of the following and report the output before proceeding.
 
 ```bash
 # 1. Python version (3.9+ required)
-python3 --version
+#    macOS/Linux: python3 --version
+#    Windows: python --version  (if python3 is not found)
+python3 --version 2>/dev/null || python --version
 
 # 2. pip available?
-python3 -m pip --version
+python3 -m pip --version 2>/dev/null || python -m pip --version
 
 # 3. Bun (required by claude-mem worker)
 bun --version || echo "NOT FOUND"
@@ -147,7 +158,7 @@ bun --version || echo "NOT FOUND"
 claude --version
 
 # 5. Check if mempalace is already installed
-python3 -m pip show mempalace 2>/dev/null || echo "NOT INSTALLED"
+python3 -m pip show mempalace 2>/dev/null || python -m pip show mempalace 2>/dev/null || echo "NOT INSTALLED"
 
 # 6. Check global Claude settings file
 cat ~/.claude/settings.json 2>/dev/null || echo "FILE NOT FOUND"
@@ -156,8 +167,14 @@ cat ~/.claude/settings.json 2>/dev/null || echo "FILE NOT FOUND"
 ls ~/.claude-mem/ 2>/dev/null || echo "NOT FOUND"
 ```
 
+> **Windows note:** If `python3` is not found, use `python` throughout this guide.
+> Claude Code runs hooks via Git Bash on Windows, so bash syntax works — but the Python
+> command name may differ. Use whichever resolves correctly from the check above.
+
 **[ASK USER]** If Bun is not installed: "Bun is required by the claude-mem worker. Shall I
-install it now via `curl -fsSL https://bun.sh/install | bash`?"
+install it now?"
+- macOS/Linux: `curl -fsSL https://bun.sh/install | bash`
+- Windows: `powershell -c "irm bun.sh/install.ps1 | iex"` (run in PowerShell, not bash)
 
 **[ASK USER]** If Python < 3.9: stop and ask the user to install a newer Python before
 continuing.
@@ -169,17 +186,21 @@ this guide must be **merged**, never replacing the file wholesale.
 
 ## Phase 1 — Install MemPalace
 
-```bash
-pip3 install mempalace
-python3 -m mempalace --version
-```
-
-If the install fails due to missing build tools on Apple Silicon:
+If already installed (shown in Phase 0 preflight), skip this phase.
 
 ```bash
-xcode-select --install
-pip3 install mempalace
+pip3 install mempalace 2>/dev/null || pip install mempalace
+python3 -m mempalace --version 2>/dev/null || python -m mempalace --version
 ```
+
+If the install fails due to missing build tools, the fix depends on platform:
+
+- **macOS:** `xcode-select --install`, then retry
+- **Linux (Debian/Ubuntu):** `sudo apt install python3-dev build-essential`, then retry
+- **Linux (Fedora/RHEL):** `sudo dnf install python3-devel gcc`, then retry
+- **Windows:** `pip install --upgrade pip setuptools wheel`, then retry; if still failing,
+  ensure Visual C++ Build Tools are installed via the
+  [Visual Studio installer](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 
 ---
 
@@ -300,9 +321,12 @@ re-initialization needed.
 
 **If not yet initialized:**
 
-**[ASK USER]** "MemPalace stores its palace data in a directory on disk. The default
-location is `~/.local/share/mempalace/palace`. Press Enter to accept the default, or
-provide a custom path (e.g. `~/Documents/mempalace`)."
+**[ASK USER]** "MemPalace stores its palace data in a directory on disk. Default locations
+by platform:
+- **macOS/Linux:** `~/.local/share/mempalace/palace`
+- **Windows:** `%APPDATA%\mempalace\palace`
+
+Press Enter to accept the default for your platform, or provide a custom path."
 
 Then initialize using the chosen path (substitute `<PATH>` with the user's answer, or
 omit for the default):
@@ -344,7 +368,7 @@ project. Examples:
 
 Format: `<Name> — <Role>, working on '<Project>' (<Key tech>)`
 
-- **Role**: infer from what you found — be specific (`Godot game developer`, `React developer`,
+- **Role**: infer from what you found — be specific (`Godot game programmer`, `React developer`,
   `Python data engineer`) rather than generic
 - **Project name**: use the value from the spec file or README; omit entirely if nothing found
 - **Key tech in parentheses**: only include if it adds meaningful detail beyond the role.
@@ -464,14 +488,25 @@ are gitignored but still visible in the filesystem and editor. Hide them:
 }
 ```
 
-**macOS Finder / terminal** — macOS has no simple hidden-file attribute. The VS Code
-exclude above is the primary solution. Prefix-renaming breaks MemPalace (it expects
-exact filenames), so VS Code exclusion is the practical limit here.
+**macOS / Linux** — neither platform has a simple hidden-file attribute for arbitrary
+filenames. The VS Code exclude above is the primary solution on both. Prefix-renaming
+the files to `.mempalace.yaml` etc. would hide them from the terminal but breaks MemPalace
+(it expects the exact filenames), so VS Code exclusion is the practical limit.
+
+**Windows** — in addition to the VS Code exclude, you can set the hidden attribute so
+the files don't appear in Explorer:
+```bash
+attrib +h mempalace.yaml entities.json
+```
 
 ### 7d. Create local file memory directory
 
 ```bash
+# macOS/Linux:
 mkdir -p ~/.claude/projects/$(python3 -c "import os; print(os.getcwd().replace('/', '--').lstrip('-'))")/memory
+
+# Windows (if python3 is not found, use python):
+mkdir -p ~/.claude/projects/$(python -c "import os; print(os.getcwd().replace('/', '--').replace('\\\\', '--').lstrip('-'))")/memory
 ```
 
 Then create `MEMORY.md` in that directory:

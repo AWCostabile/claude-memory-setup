@@ -96,7 +96,7 @@ opening Claude Code inside a project and saying:
 
 ## Prerequisites
 
-- macOS (Apple Silicon or Intel) — Windows steps may vary for some parts
+- macOS, Linux, or Windows — mobile platforms are not supported due to OS restrictions
 - Python 3.9+
 - [Bun](https://bun.sh) — required by the claude-mem worker
 - [Claude Code](https://claude.ai/code) installed and authenticated
