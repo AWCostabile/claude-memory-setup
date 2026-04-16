@@ -6,9 +6,10 @@
 > defaults without asking. Everything else can be executed autonomously.
 >
 > **Before starting**, introduce yourself briefly:
-> "I'm going to set up a four-system persistent memory architecture for Claude Code — so
-> future sessions start with full context rather than cold. I'll walk you through it step
-> by step and pause at key decisions. Let's begin with a preflight check."
+> "I'm going to set up a four-system persistent memory architecture for your Claude Code
+> environment — system-wide, so future sessions across all your projects start with full
+> context rather than cold. I'll walk you through it step by step and pause at key
+> decisions. Let's begin with a preflight check."
 
 ---
 

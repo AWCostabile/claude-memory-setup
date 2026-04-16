@@ -3,6 +3,23 @@
 A four-system persistent memory architecture for Claude Code — so every new session picks
 up where the last one left off.
 
+## Quick Setup
+
+Open any Claude Code session — in VS Code, the Claude desktop app, or anywhere else — and
+paste the following prompt. Claude will fetch the setup guide and walk you through it.
+
+```
+Please fetch the contents of this URL and follow the instructions it contains:
+https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/main/AGENT.md
+
+This is a system-wide setup, not tied to any specific project. Work through the phases in
+order and pause at [ASK USER] prompts for my input.
+```
+
+> This sets up memory for your entire Claude Code environment — preferences, identity, and
+> hooks that travel with you across every project. Per-project configuration (Phase 7) can
+> be run separately for each project you work in, any time after the global setup is done.
+
 ## The problem
 
 Claude Code starts every conversation cold. No memory of what you built last week, what
@@ -65,15 +82,17 @@ Session ends
 
 ## How to run the setup
 
-You don't run this yourself — you give `AGENT.md` to Claude Code:
+See [Quick Setup](#quick-setup) above for the copy-paste prompt. It works in any Claude
+interface — VS Code chat panel, Claude desktop app, claude.ai, or the CLI.
 
-1. Open Claude Code in your project
-2. Say: **"Please fetch `https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/main/AGENT.md` and follow it to set up cross-session memory for this project."**
+Claude fetches `AGENT.md` directly from this repo and follows it, pausing at **[ASK USER]**
+prompts for your input. The setup takes roughly 15–30 minutes end-to-end, mostly waiting on
+installs and Claude writing config files.
 
-Claude will work through the phases, pausing to ask you questions at key decision points.
+Once the global setup is done, per-project configuration (Phase 7) can be run any time by
+opening Claude Code inside a project and saying:
 
-> The setup takes roughly 15–30 minutes end-to-end, mostly waiting on installs and Claude
-> writing config files. Interactive prompts are marked **[ASK USER]** in the agent document.
+> "Please run the per-project memory setup for this project — global setup is already complete."
 
 ## Prerequisites
 
