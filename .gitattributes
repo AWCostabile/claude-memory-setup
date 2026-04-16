@@ -1,0 +1,5 @@
+# Normalize all text files to LF (this repo targets macOS/Linux)
+* text=auto eol=lf
+
+# Explicitly enforce LF for shell scripts
+hooks/*.sh text eol=lf
