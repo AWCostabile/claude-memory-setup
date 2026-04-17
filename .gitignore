@@ -1,0 +1,7 @@
+# Claude Code AI tooling — not for contributors
+.claude/
+.vscode/
+
+# MemPalace project files (auto-generated, project-root only)
+mempalace.yaml
+entities.json
