@@ -734,6 +734,21 @@ A sentinel file in the home directory tracks whether the save prompt has already
 The Stop hook already writes a baseline record every session, so the prompt is a safety net
 rather than the only save mechanism.
 
+### Compacting after an explicit save
+
+If you write a diary entry *before* running `/compact` (the recommended workflow), the hook
+will still block on the first attempt — because the sentinel was never set by a prior blocked
+run. This is expected. Just touch the sentinel manually and run `/compact` again:
+
+```bash
+touch ~/.mempalace-precompact-ready
+# then run /compact
+```
+
+Claude can do this for you automatically — if you've just saved a diary entry and are about
+to compact, say "please compact now" and Claude should touch the sentinel before triggering
+`/compact`.
+
 ---
 
 ## Phase 10 — Patch the Stop Hook (Required)
@@ -847,7 +862,9 @@ With setup complete, here is what a normal working session looks like:
 
 - **Session ends** — the Stop hook writes a baseline record silently. Claude should also
   write a richer diary entry at natural breakpoints (end of a feature, before compaction).
-  The next session picks up with full context.
+  If you then run `/compact`, the PreCompact hook may block once asking for a save — if
+  you've already saved, just say "please compact now" and Claude will prime the sentinel
+  and proceed. The next session picks up with full context.
 
 The goal is that over time, the gap between sessions stops feeling like starting over and
 starts feeling like continuing.
