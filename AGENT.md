@@ -51,6 +51,11 @@ Here's an honest picture of what changes, what improves, and what to keep in min
 - **Cross-session recall** is strong for decisions and preferences, weaker for the texture
   of a conversation — the back-and-forth, the reasoning that didn't make it into a summary.
   What was decided is durable. How you got there is not always.
+- **Tone and working relationship** are the hardest thing to preserve. Facts survive
+  compaction; the feel of a good working session doesn't travel as well. The working
+  relationship preference (Phase 8, Preference 4) is the primary mitigation — but it
+  requires deliberate effort to write well. A vague description won't help a cold-start
+  Claude calibrate; a specific one will.
 
 ### What to keep in mind
 
@@ -305,6 +310,35 @@ else:
 ```
 
 Expected output: `HOOK FIRES: OK`
+
+### The opposite: forgetting memories
+
+Storing memories automatically is safe because it's additive. Removing them is not — so
+**forget requests are intentionally not automated.** Instead, Claude should catch forget-trigger
+phrases and confirm before removing anything.
+
+The reason is simple: "forget about it" is common casual speech (dismissing a suggestion,
+moving on from an idea) and should never silently delete stored memories. The confirmation
+step forces Claude to name what it thinks you mean, catching ambiguity before it matters.
+
+**Behavioral instruction for Claude** (no hook required — this is a standing pattern):
+
+When you detect a forget-trigger phrase in a user message, do not act immediately. Instead,
+pause and confirm:
+
+> "Just to confirm — do you want me to forget **[specific description of the memory]**?
+> I'll remove it from all four memory systems."
+
+Only proceed after the user explicitly says yes. If they say no or it was casual speech,
+acknowledge and continue. On confirmation, remove from all systems:
+
+1. **MemPalace** — use `mempalace_delete_drawer` with the correct wing/room/drawer
+2. **Local file memory** — delete or update the relevant `.md` file; remove its entry from `MEMORY.md`
+3. **CLAUDE.md** — edit the file if the memory was written there
+4. **claude-mem** — if a delete endpoint exists, use it; otherwise note that the entry will
+   age out naturally and won't be actively surfaced
+
+After removing, confirm what was deleted and from which systems.
 
 ---
 
@@ -690,6 +724,45 @@ Once confirmed, substitute the user's values into the preference text and store 
 
 ---
 
+### Preference 4: Working relationship and collaboration style
+
+This one is different from the others — it's not a behavioural rule, it's a description of
+*how you want to work with Claude*. The goal is to give a cold-start Claude enough specifics
+to arrive at the right tone without the user needing to recalibrate it each session.
+
+Vague descriptions ("be collaborative") won't help much. What works is concrete detail:
+how direct the user wants Claude to be, whether they want claude to push back or defer, whether they
+treat it as a tool or a collaborator, any specific things that have felt off in past sessions.
+
+**[ASK USER]** Before storing, ask the user to describe this in their own words:
+
+> "Before I store a working relationship preference, I'd like to understand how you actually
+> want to work together. A few prompts to draw it out — answer as many or as few as feel
+> useful:
+>
+> - Do you want Claude to push back and offer genuine opinions, or primarily defer to you?
+> - How formal or casual should the tone be?
+> - Is Claude a tool you direct, a collaborator you think alongside, or something else?
+> - Anything that's felt *wrong* in past sessions — too deferential, too verbose, too
+>   cautious, over-explaining things you already know?
+> - Anything that's felt *right* that you'd want preserved?
+>
+> Take your time — a good description here pays off across every future session."
+
+Once the user has described it, synthesize their answer into a concrete preference statement.
+Include direct quotes or paraphrased specifics where possible — "bring genuine opinion, not
+just compliance" is more actionable than "be collaborative". Then confirm the memory
+statement before storing it:
+
+> "Please remember: [synthesized working relationship description]"
+
+In addition to routing through the four systems, also write the working relationship
+description into `AI_CONTEXT.md` (under an **Active Preferences** heading or similar) — this
+file loads at session start, which makes it the most reliable delivery mechanism for
+relationship context.
+
+---
+
 ## Phase 9 — Patch the PreCompact Hook (Required)
 
 The MemPalace plugin ships with a PreCompact hook that **unconditionally blocks `/compact`**,
@@ -869,6 +942,12 @@ With setup complete, here is what a normal working session looks like:
 The goal is that over time, the gap between sessions stops feeling like starting over and
 starts feeling like continuing.
 
+One thing worth tending deliberately: the working relationship memory (Preference 4). If a
+session opens with a tone that feels off — too formal, too deferential, over-explaining —
+it's worth correcting explicitly and then updating the preference. Say "please remember: ..."
+with the adjusted description. Over time this converges toward something that reliably loads
+the right register, not just the right facts.
+
 ---
 
 ## Reference
@@ -887,9 +966,16 @@ starts feeling like continuing.
 
 ### Memory trigger phrases (UserPromptSubmit hook)
 
-Fires on: _"I would like you to remember"_, _"please remember"_, _"remember that/this"_,
-_"can you remember"_, _"keep (this) in mind"_, _"don't forget"_, _"note that/this"_,
-_"make a (mental) note"_, _"store this/that away/in memory"_
+**Store** — hook fires automatically on: _"I would like you to remember"_, _"please remember"_,
+_"remember that/this"_, _"can you remember"_, _"keep (this) in mind"_, _"don't forget"_,
+_"note that/this"_, _"make a (mental) note"_, _"store this/that away/in memory"_
+
+**Forget** — Claude intercepts manually (no hook) and **confirms before acting**:
+_"please forget"_, _"forget that/this"_, _"remove that from memory"_, _"remove that preference"_,
+_"delete that memory"_, _"unlearn that"_, _"that's no longer relevant"_, _"scratch that from memory"_
+
+The confirmation step is required — "forget about it" is common casual speech and must not
+silently delete stored memories. Claude names what it thinks you mean; you confirm or deny.
 
 ### Four-system routing logic
 
