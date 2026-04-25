@@ -162,19 +162,35 @@ bun --version || echo "NOT FOUND"
 # 4. Claude Code CLI
 claude --version
 
-# 5. Check if mempalace is already installed
-python3 -m pip show mempalace 2>/dev/null || python -m pip show mempalace 2>/dev/null || echo "NOT INSTALLED"
+# 5. Check if mempalace is already installed (CLI binary, then module)
+mempalace --version 2>/dev/null || python3 -m mempalace --version 2>/dev/null || python -m mempalace --version 2>/dev/null || echo "NOT INSTALLED"
 
 # 6. Check global Claude settings file
 cat ~/.claude/settings.json 2>/dev/null || echo "FILE NOT FOUND"
 
 # 7. Check if claude-mem worker data dir exists
 ls ~/.claude-mem/ 2>/dev/null || echo "NOT FOUND"
+
+# 8. Detect claude-mem worker port (default 37777, may differ)
+python3 -c "
+import json, os
+path = os.path.expanduser('~/.claude-mem/settings.json')
+try:
+    d = json.load(open(path))
+    print('CLAUDE_MEM_PORT=' + str(d.get('CLAUDE_MEM_WORKER_PORT', '37777')))
+except:
+    print('CLAUDE_MEM_PORT=37777')
+" 2>/dev/null || echo "CLAUDE_MEM_PORT=37777"
 ```
 
 > **Windows note:** If `python3` is not found, use `python` throughout this guide.
 > Claude Code runs hooks via Git Bash on Windows, so bash syntax works — but the Python
 > command name may differ. Use whichever resolves correctly from the check above.
+
+> **Port note:** Step 8 detects the actual claude-mem worker port from `~/.claude-mem/settings.json`.
+> The default is `37777`, but some installs use a different port (e.g. `37701`). Note the
+> detected `CLAUDE_MEM_PORT` value — **substitute it wherever `37777` appears in this guide**
+> (Phases 4, 6, 7f, and the Stop hook).
 
 **[ASK USER]** If Bun is not installed: "Bun is required by the claude-mem worker. Shall I
 install it now?"
@@ -193,9 +209,30 @@ this guide must be **merged**, never replacing the file wholesale.
 
 If already installed (shown in Phase 0 preflight), skip this phase.
 
+**Standard install (most platforms):**
+
 ```bash
 pip3 install mempalace 2>/dev/null || pip install mempalace
-python3 -m mempalace --version 2>/dev/null || python -m mempalace --version
+```
+
+**macOS with Homebrew Python (PEP 668 — externally managed environment):**
+
+If the standard install fails with "externally-managed-environment", use pipx instead:
+
+```bash
+pipx install mempalace
+```
+
+> **pipx note:** When installed via pipx, the `mempalace` CLI binary is on PATH but
+> `python3 -m mempalace` will fail (the module is not on the system Python path). Throughout
+> this guide, commands use `mempalace` (CLI binary) first with `python3 -m mempalace` as
+> fallback — both forms work as long as one resolves. The SessionStart hook in Phase 7f
+> already uses this fallback pattern.
+
+Verify the install resolved:
+
+```bash
+mempalace --version 2>/dev/null || python3 -m mempalace --version 2>/dev/null || python -m mempalace --version
 ```
 
 If the install fails due to missing build tools, the fix depends on platform:
@@ -242,6 +279,12 @@ replace) the following into it:
 
 After writing, **restart Claude Code** before continuing to Phase 3 so the plugins are
 active and their MCP tools are available.
+
+> **Resuming after restart:** The restart breaks the current conversation. In the new
+> session, tell Claude: *"I'm in the middle of the four-system memory setup — Phase 2 is
+> complete (plugins configured). Please continue from Phase 3."* Claude can verify what's
+> already done by reading `~/.claude/settings.json` and checking for the keys added in
+> Phase 2.
 
 ---
 
@@ -293,6 +336,13 @@ Merge the following `hooks` block into `~/.claude/settings.json` (preserve any e
   }
 }
 ```
+
+> **Port substitution:** The instruction text inside the hook references `http://127.0.0.1:37777/api/memory/save`.
+> If your detected `CLAUDE_MEM_PORT` from Phase 0 differs from `37777`, update that URL in the
+> `command` string before saving to `settings.json`.
+
+> **Windows:** Replace `python3` with `python` in the `command` string above before saving
+> (if Phase 0 showed that only `python` resolves on your machine).
 
 **Pipe-test before saving** (verify the hook fires correctly):
 
@@ -347,13 +397,22 @@ After removing, confirm what was deleted and from which systems.
 Check current status:
 
 ```bash
-python3 -m mempalace status
+mempalace status 2>/dev/null || python3 -m mempalace status 2>/dev/null || python -m mempalace status
 ```
 
 **If the palace is already initialized** — skip to the identity file step below. No
 re-initialization needed.
 
 **If not yet initialized:**
+
+First, check if MemPalace has already created a config with a palace path:
+
+```bash
+cat ~/.mempalace/config.json 2>/dev/null || echo "NO CONFIG"
+```
+
+If `~/.mempalace/config.json` exists and contains a `palace_path`, use that path. Otherwise,
+ask the user:
 
 **[ASK USER]** "MemPalace stores its palace data in a directory on disk. Default locations
 by platform:
@@ -362,17 +421,22 @@ by platform:
 
 Press Enter to accept the default for your platform, or provide a custom path."
 
-Then initialize using the chosen path (substitute `<PATH>` with the user's answer, or
-omit for the default):
+Then initialize using the chosen path — **the `<PATH>` argument is required** (no default
+is inferred from a bare `mempalace init`). Substitute the user's answer or the default for
+your platform. The `--yes` flag is required in Claude Code's non-interactive shell:
 
 ```bash
-python3 -m mempalace init <PATH>
+mempalace init <PATH> --yes 2>/dev/null || python3 -m mempalace init <PATH> --yes
 ```
 
-Confirm the MCP server is registered with Claude Code:
+Confirm the MCP server is registered with Claude Code. Use whichever form works for the install method:
 
 ```bash
+# For pip installs (python3 -m form works):
 claude mcp add mempalace -- python3 -m mempalace.mcp_server
+
+# For pipx installs (use the mempalace binary directly):
+# claude mcp add mempalace -- mempalace mcp-server
 ```
 
 ### Identity file
@@ -380,47 +444,50 @@ claude mcp add mempalace -- python3 -m mempalace.mcp_server
 Create your identity file — shown at the top of every MemPalace wake-up, and used to
 personalise how Claude understands who it's working with.
 
-Before prompting, do a short investigation to build a suggestion:
+Before prompting, do a short investigation to build a suggestion.
+
+> **Important:** `~/.mempalace/identity.txt` is **global** — shown at the start of every
+> MemPalace session across all projects. It should describe the person's role and focus
+> broadly, not the current project specifically. A good identity is `"Alex — Senior iOS
+> Developer"`, not `"Alex — Developer working on MyApp"`. The investigation below is to
+> identify the person's *role and primary tech*, not to describe the current directory.
 
 **Step 1 — establish a name:**
 Check `git config --global user.name` first. Fall back to `whoami`, capitalised.
 
-**Step 2 — read the room:**
-Look at the current directory. Don't assume a tech stack — instead, identify what *kind*
-of project this appears to be (if any), then look for the files natural to that kind of
-project. Examples:
+**Step 2 — understand the person's role:**
+Don't infer identity from just the current directory — check multiple sources to understand
+what this person *does*, not just what project is open right now:
 
-- Directory has `.gd` files or a `project.godot` → Godot game project → check
-  `project.godot` for the project name
-- Directory looks like a web frontend → check for whichever package manifest exists
-  (`package.json`, `Gemfile`, `pubspec.yaml`, etc.) and read name + key dependencies
-- Directory has Python files → check `pyproject.toml`, `setup.py`, or `requirements.txt`
-- Directory has a `README.md` → skim the first 20–30 lines for project name and description
-- No repo, no recognisable structure → note that and skip to Step 3
+- Check what other projects exist nearby (parent directory, `~/code/`, `~/projects/`, etc.)
+- Look for breadth indicators: does the person work across multiple stacks, or deep in one?
+- Current project is *one data point*, not the whole picture
+- If the person works across many projects, the role description should reflect that breadth
 
 **Step 3 — build the suggestion:**
 
-Format: `<Name> — <Role>, working on '<Project>' (<Key tech>)`
+Format: `<Name> — <Role> (<Key tech if meaningfully distinct from role>)`
 
-- **Role**: infer from what you found — be specific (`Godot game programmer`, `React developer`,
-  `Python data engineer`) rather than generic
-- **Project name**: use the value from the spec file or README; omit entirely if nothing found
-- **Key tech in parentheses**: only include if it adds meaningful detail beyond the role.
-  Omit entirely if nothing useful to add.
+- **Role**: aim for role-level description (`Godot game developer`, `Full-stack web developer`,
+  `Python data engineer`) rather than tying it to any one project
+- **Key tech in parentheses**: only if it adds real distinction not already implied by the role
+- **Omit the project name**: identity spans all projects; individual project context loads
+  separately via CLAUDE.md
 
 **Step 4 — present and confirm:**
 
 If a reasonable suggestion was assembled:
 
 **[ASK USER]** "Based on what I can see, I'd suggest: `<suggestion>` — does that look
-right, or would you like to adjust it?"
+right, or would you like to adjust it? Keep in mind this identity is global — it shows at
+the start of every session across all your projects."
 
 If there wasn't enough to go on:
 
-**[ASK USER]** "I couldn't find enough project context to suggest an identity automatically.
-This file is shown at the start of every session, so it's worth getting right — please
-provide one sentence describing who you are and what you work on. Format suggestion:
-`<Your name> — <your role>, working on '<project name>' (<key tech if relevant>)`"
+**[ASK USER]** "I couldn't infer a clear role from what I can see. This file is shown at
+the start of every session across all your projects, so it should describe who you are
+broadly — not tied to any one project. Please provide one sentence: who you are and what
+you primarily work on. Format suggestion: `<Your name> — <your role> (<key tech if relevant>)`"
 
 Once confirmed, write it:
 
@@ -452,7 +519,22 @@ In both cases: suggest first, confirm before writing. Never silently overwrite.
 The claude-mem worker is a background HTTP server (port 37777) that stores and retrieves
 cross-session observations.
 
-Check if it's already running:
+First, confirm the port (detected in Phase 0 — substitute if it differs from 37777):
+
+```bash
+# Re-detect if needed:
+python3 -c "
+import json, os
+path = os.path.expanduser('~/.claude-mem/settings.json')
+try:
+    d = json.load(open(path))
+    print('Port:', d.get('CLAUDE_MEM_WORKER_PORT', '37777'))
+except:
+    print('Port: 37777 (default)')
+" 2>/dev/null
+```
+
+Check if it's already running (substitute your detected port if not 37777):
 
 ```bash
 curl -s http://127.0.0.1:37777/api/health | python3 -m json.tool
@@ -500,12 +582,15 @@ entities.json
 
 ```bash
 cd /path/to/project
-python3 -m mempalace init .
-python3 -m mempalace mine .
+mempalace init . --yes 2>/dev/null || python3 -m mempalace init . --yes
+mempalace mine . 2>/dev/null || python3 -m mempalace mine .
 ```
 
-**[ASK USER]** During `mempalace init`, it will detect entities (people, projects, etc.).
-Review the detected list and confirm or correct it before proceeding.
+> **`--yes` is required** — `mempalace init` is interactive by default and will block with
+> an EOFError in Claude Code's non-interactive shell without this flag.
+
+**[ASK USER]** After mining, review the detected entities (people, projects, etc.) shown in
+the output. Confirm or correct the list before proceeding.
 
 ### 7c. Hide MemPalace files from view
 
@@ -587,7 +672,7 @@ contributors since `.claude/` is gitignored. Create it with:
 | CLAUDE.md + this file | Project root / `.claude/` | Auto-loaded project + AI context |
 | Local memory files | `~/.claude/projects/<key>/memory/` | Cross-session preferences |
 | MemPalace | Global palace | Deep searchable knowledge palace |
-| claude-mem | HTTP worker port 37777 | Cross-session observation history |
+| claude-mem | HTTP worker (port detected in Phase 0) | Cross-session observation history |
 
 ## Active Preferences
 [paste confirmed preferences from Phase 8 here]
@@ -612,12 +697,12 @@ Create or update `.claude/settings.local.json` in the project root:
         "hooks": [
           {
             "type": "command",
-            "command": "PYTHONIOENCODING=utf-8 python3 -m mempalace wake-up --wing <WING_NAME> 2>/dev/null || true",
+            "command": "PYTHONIOENCODING=utf-8 mempalace wake-up --wing <WING_NAME> 2>/dev/null || PYTHONIOENCODING=utf-8 python3 -m mempalace wake-up --wing <WING_NAME> 2>/dev/null || true",
             "statusMessage": "Recalling <ProjectName> palace context..."
           },
           {
             "type": "command",
-            "command": "python3 -c \"\nimport urllib.request, json, os\nproject = os.path.basename(os.getcwd())\ntry:\n    r = urllib.request.urlopen(f'http://127.0.0.1:37777/api/context/recent?project={project}&limit=8', timeout=3)\n    data = json.loads(r.read().decode())\n    text = ' '.join(c.get('text','') for c in data.get('content',[]) if c.get('type')=='text').strip()\n    if text and 'No previous sessions' not in text:\n        ctx = f'CLAUDE-MEM recent observations for {project}:\\n{text}'\n        print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': ctx}}))\nexcept:\n    pass\n\" 2>/dev/null || true",
+            "command": "python3 -c \"\nimport urllib.request, json, os\nproject = os.path.basename(os.getcwd())\ntry:\n    settings_path = os.path.expanduser('~/.claude-mem/settings.json')\n    port = json.load(open(settings_path)).get('CLAUDE_MEM_WORKER_PORT', '37777')\nexcept:\n    port = '37777'\ntry:\n    r = urllib.request.urlopen(f'http://127.0.0.1:{port}/api/context/recent?project={project}&limit=8', timeout=3)\n    data = json.loads(r.read().decode())\n    text = ' '.join(c.get('text','') for c in data.get('content',[]) if c.get('type')=='text').strip()\n    if text and 'No previous sessions' not in text:\n        ctx = f'CLAUDE-MEM recent observations for {project}:\\n{text}'\n        print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': ctx}}))\nexcept:\n    pass\n\" 2>/dev/null || true",
             "statusMessage": "Loading claude-mem session history..."
           }
         ]
@@ -629,6 +714,9 @@ Create or update `.claude/settings.local.json` in the project root:
 
 Replace `<WING_NAME>` with the lowercase project name and `<ProjectName>` with the display
 name.
+
+> **Windows:** Replace `python3` with `python` in both `command` strings above if Phase 0
+> showed that only `python` resolves on your machine.
 
 **[ASK USER]** "What is the MemPalace wing name for this project? Suggested:
 `<lowercased directory name>`. Confirm or provide your preferred name."
@@ -782,15 +870,22 @@ Copy it to **both** of the following locations:
 1. `~/.claude/plugins/cache/mempalace/mempalace/<version>/hooks/mempal-precompact-hook.sh`
 2. `~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-precompact-hook.sh`
 
-Find the version directory, then copy:
+Find the version directory, then copy. The cache path may not exist on all installs —
+the copy is conditional; the marketplaces path is always the authoritative one:
 
 ```bash
 HOOK_SRC="<path-to-this-repo>/hooks/mempal-precompact-hook.sh"
-VERSION=$(ls ~/.claude/plugins/cache/mempalace/mempalace/ | head -1)
-cp "$HOOK_SRC" ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-precompact-hook.sh
+
+# Always copy to the marketplaces location (required)
 cp "$HOOK_SRC" ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-precompact-hook.sh
-chmod +x ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-precompact-hook.sh
 chmod +x ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-precompact-hook.sh
+
+# Copy to the cache location only if it exists
+if [ -d ~/.claude/plugins/cache/mempalace/mempalace/ ]; then
+  VERSION=$(ls ~/.claude/plugins/cache/mempalace/mempalace/ | head -1)
+  cp "$HOOK_SRC" ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-precompact-hook.sh
+  chmod +x ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-precompact-hook.sh
+fi
 ```
 
 After patching, prime the sentinel so the very first `/compact` succeeds without triggering
@@ -853,11 +948,17 @@ Copy it to **both** locations:
 
 ```bash
 HOOK_SRC="<path-to-this-repo>/hooks/mempal-stop-hook.sh"
-VERSION=$(ls ~/.claude/plugins/cache/mempalace/mempalace/ | head -1)
-cp "$HOOK_SRC" ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-stop-hook.sh
+
+# Always copy to the marketplaces location (required)
 cp "$HOOK_SRC" ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-stop-hook.sh
-chmod +x ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-stop-hook.sh
 chmod +x ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-stop-hook.sh
+
+# Copy to the cache location only if it exists
+if [ -d ~/.claude/plugins/cache/mempalace/mempalace/ ]; then
+  VERSION=$(ls ~/.claude/plugins/cache/mempalace/mempalace/ | head -1)
+  cp "$HOOK_SRC" ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-stop-hook.sh
+  chmod +x ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-stop-hook.sh
+fi
 ```
 
 > **Note:** Both patches will be overwritten if the MemPalace plugin auto-updates.
@@ -877,17 +978,17 @@ Each command should print the patch marker — if either prints nothing, re-appl
 Phase 9 or 10.
 
 ```bash
-grep -r "MEMPALACE-PATCH:precompact-sentinel-v1" ~/.claude/plugins/cache/mempalace/ ~/.claude/plugins/marketplaces/mempalace/ 2>/dev/null \
+grep -r "MEMPALACE-PATCH:precompact-sentinel-v1" ~/.claude/plugins/marketplaces/mempalace/ ~/.claude/plugins/cache/mempalace/ 2>/dev/null \
   && echo "PreCompact patch: OK" || echo "PreCompact patch: MISSING — re-apply Phase 9"
 
-grep -r "MEMPALACE-PATCH:stop-suppress-v1" ~/.claude/plugins/cache/mempalace/ ~/.claude/plugins/marketplaces/mempalace/ 2>/dev/null \
+grep -r "MEMPALACE-PATCH:stop-suppress-v1" ~/.claude/plugins/marketplaces/mempalace/ ~/.claude/plugins/cache/mempalace/ 2>/dev/null \
   && echo "Stop patch: OK" || echo "Stop patch: MISSING — re-apply Phase 10"
 ```
 
 ### Full setup checklist
 
 - [ ] Patch check above passes for both hooks
-- [ ] `python3 -m mempalace status` shows a palace with at least one wing
+- [ ] `mempalace status` (or `python3 -m mempalace status`) shows a palace with at least one wing
 - [ ] `curl -s http://127.0.0.1:37777/api/health` returns `{"status":"ok",...}`
 - [ ] `~/.claude/settings.json` contains `enabledPlugins`, `extraKnownMarketplaces`, `permissions.allow`, and `hooks.UserPromptSubmit`
 - [ ] `.claude/settings.local.json` in the project root contains `hooks.SessionStart` with 2 hooks
@@ -910,6 +1011,76 @@ weaker session starts.
 
 **[ASK USER]** "Setup is complete. This plan was fetched from a URL and doesn't need to be
 kept locally. If you'd like a reference copy somewhere, I can save it — otherwise we're done."
+
+---
+
+## Troubleshooting
+
+### HNSW index corruption
+
+Symptoms: `mempalace_diary_write` or `mempalace_add_drawer` fails with
+`"Error in compaction: Failed to apply logs to the hnsw segment writer."` This can happen
+after large mining runs (thousands of drawers).
+
+**Recovery steps:**
+
+1. Stop any running MemPalace processes.
+
+2. Identify which segment directories contain the corruption (look for the wing/room that
+   triggered the error in the stack trace).
+
+3. Attempt the built-in repair:
+   ```bash
+   mempalace repair 2>/dev/null || python3 -m mempalace repair
+   ```
+
+4. If repair fails, rebuild the index from SQLite (the SQLite store is the source of
+   truth; HNSW is a derived index):
+   ```bash
+   mempalace rebuild-index 2>/dev/null || python3 -m mempalace rebuild-index
+   ```
+
+5. If still failing, locate and delete only the HNSW segment files (not the SQLite db):
+   ```bash
+   # Find the palace path from ~/.mempalace/config.json
+   cat ~/.mempalace/config.json
+   # Then remove the hnsw segment directories — leave the SQLite files intact
+   find <palace_path> -name "*.hnsw" -o -name "hnsw_segments" -type d
+   ```
+   After deleting the HNSW segments, run `mempalace rebuild-index` to regenerate them.
+
+> The existing hook patches already include an HNSW repair step that fires during
+> Stop hook saves. If you see corruption after a large mine, run the repair command
+> before attempting further writes.
+
+---
+
+### Multi-project workspaces
+
+If you have multiple interdependent projects (e.g. a monorepo, shared libraries, or a set
+of services that all need to be mined):
+
+**Mining order matters.** Mine in dependency order — foundational libraries before the
+projects that depend on them. This gives MemPalace accurate cross-reference context when
+building wings for the dependent projects.
+
+Example order for a typical setup:
+1. Shared types / core library
+2. Shared utilities
+3. Application projects (in any order)
+
+**Symlinks resolve to real paths.** MemPalace stores content by wing/room, not by absolute
+path, so symlinked directories are fine — the content is mined from the resolved real path.
+Note the real path in your entities list so you can identify it later.
+
+**Cross-project relationships.** After mining all projects, note key inter-project
+relationships in the relevant wings. For example, if `app-frontend` depends heavily on
+`api-types`, add a drawer in the `app-frontend` wing noting this. Claude can then surface
+it when working in the frontend project.
+
+**Phase 7 per-project setup.** Run Phase 7 once per project, in the same dependency order
+as mining. Each project gets its own wing, CLAUDE.md, and memory directory — but
+cross-project preferences from Phase 8 travel automatically across all of them.
 
 ---
 

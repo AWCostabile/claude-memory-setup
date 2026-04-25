@@ -10,7 +10,7 @@ paste the following prompt. Claude will fetch the setup guide and walk you throu
 
 ```
 Please fetch the contents of this URL and follow the instructions it contains:
-https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/main/AGENT.md
+https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/master/AGENT.md
 
 This is a system-wide setup, not tied to any specific project. Work through the phases in
 order and pause at [ASK USER] prompts for my input.

@@ -28,6 +28,12 @@ if [ "$SESSION_ID" != "unknown" ] && [ ! -f "$SENTINEL" ]; then
 import urllib.request, json, os
 project = os.environ['PROJECT']
 timestamp = os.environ['TIMESTAMP']
+# Detect port from settings.json; fall back to 37777
+try:
+    settings_path = os.path.expanduser('~/.claude-mem/settings.json')
+    port = json.load(open(settings_path)).get('CLAUDE_MEM_WORKER_PORT', '37777')
+except:
+    port = '37777'
 try:
     payload = json.dumps({
         'project': project,
@@ -40,7 +46,7 @@ try:
         )
     }).encode()
     req = urllib.request.Request(
-        'http://127.0.0.1:37777/api/memory/save',
+        f'http://127.0.0.1:{port}/api/memory/save',
         data=payload,
         headers={'Content-Type': 'application/json'}
     )
