@@ -9,12 +9,16 @@ Open any Claude Code session — in VS Code, the Claude desktop app, or anywhere
 paste the following prompt. Claude will fetch the setup guide and walk you through it.
 
 ```
-Please fetch the contents of this URL and follow the instructions it contains:
-https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/master/AGENT.md
+Please run the following command and follow the instructions in the output:
+curl -s https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/master/AGENT.md
 
 This is a system-wide setup, not tied to any specific project. Work through the phases in
 order and pause at [ASK USER] prompts for my input.
 ```
+
+> **Why `curl` instead of a URL fetch?** Claude's built-in web fetch tool summarises content
+> before returning it — which would garble the setup guide. `curl` retrieves the raw text
+> directly, so Claude reads the full instructions as written.
 
 > This sets up memory for your entire Claude Code environment — preferences, identity, and
 > hooks that travel with you across every project. Per-project configuration (Phase 7) can
