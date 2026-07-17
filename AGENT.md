@@ -862,16 +862,18 @@ installation, and re-apply after any MemPalace plugin update.
 The hook always outputs `{"decision":"block"}` with no mechanism to signal that a save has
 already occurred, so `/compact` loops forever.
 
-### The fix — sentinel file pattern
+### The fix — two parts
+
+This fix has two parts that work together:
+
+**Part 1 — Passthrough hook patch.** The patched hook simply allows compaction to proceed.
+Pre-compact saves are handled by Part 2, so no blocking is needed here.
 
 The patched file is in this repository at [`hooks/mempal-precompact-hook.sh`](hooks/mempal-precompact-hook.sh).
 Copy it to **both** of the following locations:
 
 1. `~/.claude/plugins/cache/mempalace/mempalace/<version>/hooks/mempal-precompact-hook.sh`
 2. `~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-precompact-hook.sh`
-
-Find the version directory, then copy. The cache path may not exist on all installs —
-the copy is conditional; the marketplaces path is always the authoritative one:
 
 ```bash
 HOOK_SRC="<path-to-this-repo>/hooks/mempal-precompact-hook.sh"
@@ -888,34 +890,33 @@ if [ -d ~/.claude/plugins/cache/mempalace/mempalace/ ]; then
 fi
 ```
 
-After patching, prime the sentinel so the very first `/compact` succeeds without triggering
-a forced save cycle (one-time only):
+**Part 2 — UserPromptSubmit hook in `settings.json`.** This hook intercepts `/compact` at
+the prompt submission stage — before the PreCompact hook ever fires. It injects a directive
+into Claude's context telling Claude to save to MemPalace first. Claude automatically runs
+`mempalace_diary_write` and `mempalace_add_drawer`, confirms the saves, and then `/compact`
+proceeds. No manual re-prompting required.
 
-```bash
-touch ~/.mempalace-precompact-ready
+Add this entry to the `hooks.UserPromptSubmit` array in `~/.claude/settings.json` (alongside
+the existing memory-trigger hook from Phase 8):
+
+```json
+{
+  "hooks": [
+    {
+      "type": "command",
+      "command": "python -c \"\nimport json, sys, re\ndata = json.load(sys.stdin)\nprompt = (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''\nif re.search(r'^\\\\s*/compact\\\\b', prompt, re.IGNORECASE):\n    msg = ('PRE-COMPACT SAVE REQUIRED. The user has requested /compact. Before compaction runs, you MUST save the current session to MemPalace. Execute these steps NOW, in order, before doing anything else:\\\\n'\n        '1. Call mempalace_diary_write with a thorough AAAK-compressed summary of this entire session (decisions made, code written, problems solved, context that would be lost).\\\\n'\n        '2. Call mempalace_add_drawer for any verbatim quotes, specific code snippets, or discrete facts that deserve their own drawer.\\\\n'\n        '3. Optionally call mempalace_kg_add for any new entity relationships discovered this session.\\\\n'\n        'After completing all saves, confirm to the user what was saved, then the /compact will proceed automatically.')\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': msg}}))\n\" 2>/dev/null || true",
+      "statusMessage": "Preparing MemPalace save before compact..."
+    }
+  ]
+}
 ```
 
-### What the patch does
+### Why this approach
 
-The patched hook blocks **once** to prompt a save, then allows compaction on the retry.
-A sentinel file in the home directory tracks whether the save prompt has already fired.
-The Stop hook already writes a baseline record every session, so the prompt is a safety net
-rather than the only save mechanism.
-
-### Compacting after an explicit save
-
-If you write a diary entry *before* running `/compact` (the recommended workflow), the hook
-will still block on the first attempt — because the sentinel was never set by a prior blocked
-run. This is expected. Just touch the sentinel manually and run `/compact` again:
-
-```bash
-touch ~/.mempalace-precompact-ready
-# then run /compact
-```
-
-Claude can do this for you automatically — if you've just saved a diary entry and are about
-to compact, say "please compact now" and Claude should touch the sentinel before triggering
-`/compact`.
+The PreCompact hook is a bash script — it can display messages but cannot invoke Claude tool
+calls. The old sentinel pattern blocked compaction and showed a message, but Claude only acted
+on it if the user explicitly re-prompted. The `UserPromptSubmit` hook fires while Claude is
+still in conversation mode and can respond to directives, so the saves happen automatically.
 
 ---
 
@@ -978,11 +979,20 @@ Each command should print the patch marker — if either prints nothing, re-appl
 Phase 9 or 10.
 
 ```bash
-grep -r "MEMPALACE-PATCH:precompact-sentinel-v1" ~/.claude/plugins/marketplaces/mempalace/ ~/.claude/plugins/cache/mempalace/ 2>/dev/null \
+grep -r "MEMPALACE-PATCH:precompact-passthrough-v2" ~/.claude/plugins/marketplaces/mempalace/ ~/.claude/plugins/cache/mempalace/ 2>/dev/null \
   && echo "PreCompact patch: OK" || echo "PreCompact patch: MISSING — re-apply Phase 9"
 
 grep -r "MEMPALACE-PATCH:stop-suppress-v1" ~/.claude/plugins/marketplaces/mempalace/ ~/.claude/plugins/cache/mempalace/ 2>/dev/null \
   && echo "Stop patch: OK" || echo "Stop patch: MISSING — re-apply Phase 10"
+
+python -c "
+import json, re
+s = open(open(\"$(echo ~)\").read().strip() + '/.claude/settings.json').read()
+d = json.loads(s)
+hooks = d.get('hooks', {}).get('UserPromptSubmit', [])
+found = any('/compact' in json.dumps(h) for h in hooks)
+print('UserPromptSubmit /compact hook: OK' if found else 'UserPromptSubmit /compact hook: MISSING — re-apply Phase 9 Part 2')
+" 2>/dev/null || echo "UserPromptSubmit /compact hook: MISSING — re-apply Phase 9 Part 2"
 ```
 
 ### Full setup checklist
@@ -990,7 +1000,7 @@ grep -r "MEMPALACE-PATCH:stop-suppress-v1" ~/.claude/plugins/marketplaces/mempal
 - [ ] Patch check above passes for both hooks
 - [ ] `mempalace status` (or `python3 -m mempalace status`) shows a palace with at least one wing
 - [ ] `curl -s http://127.0.0.1:37777/api/health` returns `{"status":"ok",...}`
-- [ ] `~/.claude/settings.json` contains `enabledPlugins`, `extraKnownMarketplaces`, `permissions.allow`, and `hooks.UserPromptSubmit`
+- [ ] `~/.claude/settings.json` contains `enabledPlugins`, `extraKnownMarketplaces`, `permissions.allow`, and `hooks.UserPromptSubmit` with **two** hooks (memory trigger + `/compact` interceptor)
 - [ ] `.claude/settings.local.json` in the project root contains `hooks.SessionStart` with 2 hooks
 - [ ] `CLAUDE.md` exists in project root, ends with `@.claude/AI_CONTEXT.md` import
 - [ ] `.claude/AI_CONTEXT.md` exists and preferences section is filled in (not placeholder text)
@@ -1106,9 +1116,9 @@ With setup complete, here is what a normal working session looks like:
 
 - **Session ends** — the Stop hook writes a baseline record silently. Claude should also
   write a richer diary entry at natural breakpoints (end of a feature, before compaction).
-  If you then run `/compact`, the PreCompact hook may block once asking for a save — if
-  you've already saved, just say "please compact now" and Claude will prime the sentinel
-  and proceed. The next session picks up with full context.
+  When you run `/compact`, MemPalace saves happen automatically — Claude runs
+  `mempalace_diary_write` and `mempalace_add_drawer` before compaction begins, with no
+  manual re-prompting required. The next session picks up with full context.
 
 The goal is that over time, the gap between sessions stops feeling like starting over and
 starts feeling like continuing.
