@@ -812,34 +812,43 @@ preference to all four memory systems automatically.
 
 ---
 
-### Preference 2: Re-orient after long gaps + post-weekend recap
+### Preference 2: Session-gap recap (hook-backed)
 
-This preference has configurable thresholds. Before storing, ask:
+Earlier versions of this guide stored this as a pure behavioral preference — "if N hours
+have passed, recap" — and it never fired reliably, because nothing told Claude when the
+last session actually was. A preference without a signal is a wish. The mechanism is now
+a hook that computes the facts, paired with an assessment Claude makes against the first
+prompt.
 
-**[ASK USER]**
-> "This preference has a few configurable values — I'll suggest defaults, you can adjust
-> any of them:
->
-> 1. **New session gap** — how many hours since the last conversation before I should
->    proactively recap? *(suggested: 4 hours)*
-> 2. **Resumed conversation gap** — how many hours of inactivity in an existing conversation
->    before I should re-orient? *(suggested: 6 hours)*
-> 3. **Post-weekend recap** — on Mondays (or the first session after a weekend), would you
->    like a brief recap of what we were working on the previous week? *(suggested: yes)*
->
-> Confirm or adjust each value."
+**The hook** — [`scripts/recap-nudge.sh`](scripts/recap-nudge.sh) runs at SessionStart.
+It finds when the last session in the project ended (claude-mem's newest observation,
+falling back to transcript file times), and when the gap exceeds `RECAP_HOURS` (default 4)
+it injects the gap facts plus this directive — silent otherwise:
 
-Once confirmed, substitute the user's values into the preference text and store it:
+> Assess whether a recap would help before answering the first message: **recap** when the
+> prompt is investigatory ("trying to figure out why...") or resumes prior work ("let's
+> pick up..."); **skip or compress to one line** when the prompt is self-contained
+> ("execute plan.md") or unrelated to previous work. If recapping, pull recent claude-mem
+> observations and the MemPalace diary, state what was in flight and the likely next step,
+> and verify with the user before relying on stale details.
 
-> If more than **[GAP_1] hours** have passed since the last conversation, OR an existing
-> conversation is resumed after **[GAP_2] hours** of inactivity, proactively recap what we
-> were working on, where we left off, and what the next step was. Gently verify the user's
-> recollection before acting on details they provide — they may be less accurate on specifics
-> after a long gap. Goal: preserve momentum without the user needing to re-brief from scratch.
->
-> Additionally, on Mondays or the first session following a weekend break, open with a brief
-> recap of what was being worked on the previous week, even if the gap was less than [GAP_1]
-> hours — weekends interrupt working memory differently than shorter gaps.
+Post-weekend and multi-day gaps add a "lean toward a brief recap" note. Deliberately
+**not** included: a mid-conversation re-orient timer — scroll-back covers resumed
+conversations, so recap there only when the user asks.
+
+**To adopt it**, add to `.claude/settings.local.json` alongside the Phase 7f hooks (with
+the script available in the project, or fetched from this repo):
+
+```json
+{
+  "type": "command",
+  "command": "bash scripts/recap-nudge.sh 2>/dev/null || true",
+  "statusMessage": "Checking session gap..."
+}
+```
+
+**[ASK USER]** "Adopt the session-gap recap? Default threshold is 4 hours — confirm or
+adjust (set `RECAP_HOURS=<n>` in the command to change it)."
 
 ---
 

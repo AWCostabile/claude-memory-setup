@@ -140,7 +140,8 @@ claude-memory-setup/
 └── scripts/
     ├── memory-doctor.sh           ← one-glance impact audit of all four systems
     ├── sync-hooks.sh              ← drift-repair: re-applies hook patches after plugin updates
-    └── tuneup-nudge.sh            ← monthly "tune-up due" reminder at session start
+    ├── tuneup-nudge.sh            ← monthly "tune-up due" reminder at session start
+    └── recap-nudge.sh             ← session-gap facts + assess-first recap directive
 ```
 
 The `hooks/` directory holds the canonical hardened versions of two MemPalace plugin
