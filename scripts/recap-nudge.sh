@@ -70,6 +70,13 @@ if last is None:
         last = max(mtimes)
         source = 'transcripts'
 
+# Test knob: RECAP_FAKE_GAP_H=<hours> simulates a gap so the feature can be verified
+# end-to-end without waiting for a real one (source is labeled 'simulated').
+fake = os.environ.get('RECAP_FAKE_GAP_H')
+if fake:
+    last = now - float(fake) * 3600
+    source = 'simulated'
+
 if last is None:
     sys.exit(0)          # no prior session known — nothing to recap
 
