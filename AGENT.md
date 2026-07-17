@@ -104,12 +104,20 @@ where you want Claude to surface relevant past decisions without reading everyth
 
 ### claude-mem
 A background HTTP worker (runs on `localhost:37777`) that maintains a cross-session
-observation log. It stores timestamped records of what happened in each session — decisions
-made, features built, bugs fixed — and surfaces them at session start via a hook. Unlike
-MemPalace (which is mined from files), claude-mem captures *conversation history*: what
-Claude and you actually did together. It also auto-saves a baseline record every session
-via the Stop hook, so there's always a minimum trail even if no explicit save is made.
-Powered by Bun; needs to be running when Claude Code is open.
+observation log. It watches each session through its own hooks, generates timestamped
+narrative observations of what happened — decisions made, features built, bugs fixed —
+and surfaces them at session start. Unlike MemPalace (which is mined from files),
+claude-mem captures *conversation history*: what Claude and you actually did together.
+
+**Worker lifecycle (worth knowing):** the plugin's own SessionStart hook boots the worker
+when a Claude Code session opens; it keeps running in the background afterwards.
+`~/.claude-mem/supervisor.json` tracks its processes, logs live in `~/.claude-mem/logs/`,
+and `curl -s http://127.0.0.1:37777/api/health` tells you if it's alive. **Use plugin
+version ≥ 13.x** — 12.x generated observations by shelling out to the `claude` CLI in a way
+that can fail silently forever (every session summary reads "failed — no summary
+available"); 13.x authenticates directly via OAuth token and works. The memory doctor
+(Phase 11) checks capture age so a silent failure can't go unnoticed for months again.
+Powered by Bun.
 
 ### How they connect
 
@@ -124,10 +132,10 @@ During session
   → "please remember X" triggers hook
       → stores to all four systems simultaneously
 
-Session ends
-  → Stop hook fires silently
-      → writes baseline observation to claude-mem (automatic)
-      → Claude writes richer diary entry at natural breakpoints (explicit)
+Throughout the session
+  → claude-mem's own hooks capture observations automatically
+  → Stop hook fires silently after each reply (MemPalace transcript ingestion)
+  → Claude writes richer diary entries at natural breakpoints (explicit)
 ```
 
 ---
@@ -139,7 +147,7 @@ Session ends
 | **CLAUDE.md**         | Project conventions auto-loaded every session | Written by Claude and/or by you manually             |
 | **Local file memory** | Typed `.md` preference/project/feedback files | Written when you say "remember X"                    |
 | **MemPalace**         | Searchable semantic knowledge palace          | Mined from project files + written on request        |
-| **claude-mem**        | Cross-session observation history             | Auto-captured via Stop hook + direct HTTP write      |
+| **claude-mem**        | Cross-session observation history             | Auto-captured natively by the plugin (v13+)          |
 
 ---
 
@@ -148,13 +156,16 @@ Session ends
 Run each of the following and report the output before proceeding.
 
 ```bash
-# 1. Python version (3.9+ required)
-#    macOS/Linux: python3 --version
-#    Windows: python --version  (if python3 is not found)
-python3 --version 2>/dev/null || python --version
+# 1. Python version (3.9+ required) — FUNCTIONAL probe, not just PATH lookup.
+#    On Windows, Microsoft Store stub executables named python/python3 sit on PATH and
+#    fail with a nonzero exit ("Python was not found..."). `command -v` finds them and
+#    lies. Only an actual execution proves an interpreter works. `py` (the Windows
+#    launcher) is probed last — it usually survives when the stubs are broken.
+PY=""; for c in python3 python py; do "$c" -c "pass" >/dev/null 2>&1 && { PY="$c"; break; }; done
+if [ -n "$PY" ]; then echo "Working interpreter: $PY ($("$PY" --version 2>&1))"; else echo "NO WORKING PYTHON"; fi
 
 # 2. pip available?
-python3 -m pip --version 2>/dev/null || python -m pip --version
+"$PY" -m pip --version 2>/dev/null || pip --version
 
 # 3. Bun (required by claude-mem worker)
 bun --version || echo "NOT FOUND"
@@ -162,8 +173,9 @@ bun --version || echo "NOT FOUND"
 # 4. Claude Code CLI
 claude --version
 
-# 5. Check if mempalace is already installed (CLI binary, then module)
-mempalace --version 2>/dev/null || python3 -m mempalace --version 2>/dev/null || python -m mempalace --version 2>/dev/null || echo "NOT INSTALLED"
+# 5. Check if mempalace is already installed (CLI binary, then module via $PY)
+#    Note: the CLI has no --version flag — probe with `status`.
+mempalace status >/dev/null 2>&1 || "$PY" -m mempalace status >/dev/null 2>&1 && echo "mempalace: INSTALLED" || echo "mempalace: NOT INSTALLED"
 
 # 6. Check global Claude settings file
 cat ~/.claude/settings.json 2>/dev/null || echo "FILE NOT FOUND"
@@ -172,7 +184,7 @@ cat ~/.claude/settings.json 2>/dev/null || echo "FILE NOT FOUND"
 ls ~/.claude-mem/ 2>/dev/null || echo "NOT FOUND"
 
 # 8. Detect claude-mem worker port (default 37777, may differ)
-python3 -c "
+"$PY" -c "
 import json, os
 path = os.path.expanduser('~/.claude-mem/settings.json')
 try:
@@ -183,14 +195,20 @@ except:
 " 2>/dev/null || echo "CLAUDE_MEM_PORT=37777"
 ```
 
-> **Windows note:** If `python3` is not found, use `python` throughout this guide.
-> Claude Code runs hooks via Git Bash on Windows, so bash syntax works — but the Python
-> command name may differ. Use whichever resolves correctly from the check above.
+> **Interpreter note (all platforms):** Every hook and command in this guide resolves
+> Python *functionally* with the probe from check 1 — `python3`, then `python`, then `py` —
+> rather than assuming a name. This matters most on Windows: the Microsoft Store ships
+> stub executables named `python`/`python3` that exist on PATH but only print an error,
+> and a Python upgrade (e.g. via the Python Install Manager) can silently break the
+> aliases while leaving `py` working. A hook hardcoded to one name dies silently behind
+> its `2>/dev/null || true`; the probe chain keeps working. If check 1 printed
+> `NO WORKING PYTHON`, stop — nothing python-based in this guide will function.
+> Claude Code runs hooks via Git Bash on Windows, so bash syntax works everywhere.
 
 > **Port note:** Step 8 detects the actual claude-mem worker port from `~/.claude-mem/settings.json`.
 > The default is `37777`, but some installs use a different port (e.g. `37701`). Note the
 > detected `CLAUDE_MEM_PORT` value — **substitute it wherever `37777` appears in this guide**
-> (Phases 4, 6, 7f, and the Stop hook).
+> (Phases 4, 6, and 7f).
 
 **[ASK USER]** If Bun is not installed: "Bun is required by the claude-mem worker. Shall I
 install it now?"
@@ -229,10 +247,10 @@ pipx install mempalace
 > fallback — both forms work as long as one resolves. The SessionStart hook in Phase 7f
 > already uses this fallback pattern.
 
-Verify the install resolved:
+Verify the install resolved (the CLI has no `--version` flag — probe with `status`):
 
 ```bash
-mempalace --version 2>/dev/null || python3 -m mempalace --version 2>/dev/null || python -m mempalace --version
+mempalace status >/dev/null 2>&1 && echo "CLI: OK" || python3 -m mempalace status >/dev/null 2>&1 && echo "python3 -m: OK" || python -m mempalace status >/dev/null 2>&1 && echo "python -m: OK" || py -m mempalace status >/dev/null 2>&1 && echo "py -m: OK" || echo "NOT RESOLVING"
 ```
 
 If the install fails due to missing build tools, the fix depends on platform:
@@ -327,7 +345,7 @@ Merge the following `hooks` block into `~/.claude/settings.json` (preserve any e
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -c \"\nimport json, sys, re\ndata = json.load(sys.stdin)\nprompt = (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''\npatterns = [r\\\"i(?:'d)?(?:\\\\s+would|\\\\s+want)?\\\\s+(?:like\\\\s+)?(?:you\\\\s+)?to\\\\s+remember\\\",r\\\"please\\\\s+remember\\\",r\\\"remember\\\\s+(?:that|this)\\\",r\\\"can\\\\s+you\\\\s+remember\\\",r\\\"make\\\\s+a\\\\s+(?:note|mental\\\\s+note)\\\",r\\\"keep\\\\s+(?:this\\\\s+)?in\\\\s+mind\\\",r\\\"don'?t\\\\s+forget\\\",r\\\"note\\\\s+(?:that|this|for\\\\s+future)\\\",r\\\"store\\\\s+(?:this|that)\\\\s+(?:away|in\\\\s+memory)\\\"]\nif prompt and any(re.search(p, prompt, re.IGNORECASE) for p in patterns):\n    msg = ('MEMORY REQUEST DETECTED. Analyse what the user wants remembered, classify its scope, then store it in ALL applicable systems:\\\\n'\n        '1. MEMPALACE (mcp__plugin_mempalace_mempalace__mempalace_add_drawer): Always use for any durable knowledge. Pick the right wing (project name) and room (general/decisions/src/maps/etc). For cross-project preferences use wing=user-preferences, room=feedback.\\\\n'\n        '2. LOCAL FILE MEMORY (~/.claude/projects/<project>/memory/): Write a typed .md file (feedback_*.md, project_*.md, user_*.md, reference_*.md) and add an entry to MEMORY.md. For cross-project preferences also write to ~/.claude/projects/global/memory/ (create dir if needed).\\\\n'\n        '3. CLAUDE.md: Update the project CLAUDE.md only if this is a session-critical project convention that every future session must know immediately (code style, architectural rules, critical gotchas).\\\\n'\n        '4. CLAUDE-MEM (direct write): call POST http://127.0.0.1:37777/api/memory/save with JSON body {\\\\\"project\\\\\": \\\\\"<current project>\\\\\", \\\\\"type\\\\\": \\\\\"decision\\\\\", \\\\\"text\\\\\": \\\\\"<the memory>\\\\\", \\\\\"title\\\\\": \\\\\"<short title>\\\\\"}. Use type=decision for preferences/rules, type=discovery for project-specific findings. Derive project name from the current working directory basename. If the worker is unreachable, fall back to narrating the memory clearly in your response so the Stop hook captures it from the transcript.\\\\n'\n        'After storing, confirm to the user: what was saved, which of the 4 systems it went into, and why each was chosen or skipped.')\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': msg}}))\n\" 2>/dev/null || true",
+            "command": "PY=\"\"; for c in python3 python py; do \"$c\" -c pass >/dev/null 2>&1 && { PY=\"$c\"; break; }; done; [ -z \"$PY\" ] && exit 0; \"$PY\" -c \"\nimport json, sys, re\ndata = json.load(sys.stdin)\nprompt = (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''\npatterns = [r\\\"i(?:'d)?(?:\\\\s+would|\\\\s+want)?\\\\s+(?:like\\\\s+)?(?:you\\\\s+)?to\\\\s+remember\\\",r\\\"please\\\\s+remember\\\",r\\\"remember\\\\s+(?:that|this)\\\",r\\\"can\\\\s+you\\\\s+remember\\\",r\\\"make\\\\s+a\\\\s+(?:note|mental\\\\s+note)\\\",r\\\"keep\\\\s+(?:this\\\\s+)?in\\\\s+mind\\\",r\\\"don'?t\\\\s+forget\\\",r\\\"note\\\\s+(?:that|this|for\\\\s+future)\\\",r\\\"store\\\\s+(?:this|that)\\\\s+(?:away|in\\\\s+memory)\\\"]\nif prompt and any(re.search(p, prompt, re.IGNORECASE) for p in patterns):\n    msg = ('MEMORY REQUEST DETECTED. Analyse what the user wants remembered, classify its scope, then store it in ALL applicable systems:\\\\n'\n        '1. MEMPALACE (mcp__plugin_mempalace_mempalace__mempalace_add_drawer): Always use for any durable knowledge. Pick the right wing (project name) and room (general/decisions/src/maps/etc). For cross-project preferences use wing=user-preferences, room=feedback.\\\\n'\n        '2. LOCAL FILE MEMORY (~/.claude/projects/<project>/memory/): Write a typed .md file (feedback_*.md, project_*.md, user_*.md, reference_*.md) and add an entry to MEMORY.md. For cross-project preferences also write to ~/.claude/projects/global/memory/ (create dir if needed).\\\\n'\n        '3. CLAUDE.md: Update the project CLAUDE.md only if this is a session-critical project convention that every future session must know immediately (code style, architectural rules, critical gotchas).\\\\n'\n        '4. CLAUDE-MEM (direct write): call POST http://127.0.0.1:37777/api/memory/save with JSON body {\\\"project\\\": \\\"<current project>\\\", \\\"type\\\": \\\"decision\\\", \\\"text\\\": \\\"<the memory>\\\", \\\"title\\\": \\\"<short title>\\\"}. Use type=decision for preferences/rules, type=discovery for project-specific findings. Derive project name from the current working directory basename. If the worker is unreachable, fall back to narrating the memory clearly in your response so the Stop hook captures it from the transcript.\\\\n'\n        'After storing, confirm to the user: what was saved, which of the 4 systems it went into, and why each was chosen or skipped.')\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': msg}}))\n\" 2>/dev/null || true",
             "statusMessage": "Checking for memory requests..."
           }
         ]
@@ -341,25 +359,29 @@ Merge the following `hooks` block into `~/.claude/settings.json` (preserve any e
 > If your detected `CLAUDE_MEM_PORT` from Phase 0 differs from `37777`, update that URL in the
 > `command` string before saving to `settings.json`.
 
-> **Windows:** Replace `python3` with `python` in the `command` string above before saving
-> (if Phase 0 showed that only `python` resolves on your machine).
+> **No per-platform substitution needed:** the command resolves a working interpreter at
+> run time (`python3` → `python` → `py`), so the same string works on macOS, Linux, and
+> Windows — including machines where the Store stubs shadow the real Python.
 
-**Pipe-test before saving** (verify the hook fires correctly):
+**Pipe-test after saving** — test the **full command exactly as saved** in `settings.json`,
+not a fragment. A fragment test verifies only the regex; the full command is the only thing
+that catches bash-level quoting failures (a mis-escaped quote in the command string makes
+the hook fail silently on every prompt while a fragment test still passes — this happened):
 
 ```bash
-echo '{"message": "I would like you to remember I prefer tabs over spaces"}' | python3 -c "
-import json, sys, re
-data = json.load(sys.stdin)
-prompt = (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''
-patterns = [r\"i(?:'d)?(?:\s+would|\s+want)?\s+(?:like\s+)?(?:you\s+)?to\s+remember\"]
-if prompt and any(re.search(p, prompt, re.IGNORECASE) for p in patterns):
-    print('HOOK FIRES: OK')
-else:
-    print('HOOK SILENT: check pattern')
-"
+PY=""; for c in python3 python py; do "$c" -c "pass" >/dev/null 2>&1 && { PY="$c"; break; }; done
+CMD=$("$PY" -c "
+import json, os
+d = json.load(open(os.path.expanduser('~/.claude/settings.json')))
+print(d['hooks']['UserPromptSubmit'][0]['hooks'][0]['command'])
+")
+echo '{"message": "I would like you to remember I prefer tabs over spaces"}' | bash -c "$CMD" \
+  | grep -q "MEMORY REQUEST DETECTED" && echo "HOOK FIRES: OK" || echo "HOOK BROKEN — check quoting and interpreter"
+echo '{"message": "an unrelated message"}' | bash -c "$CMD" \
+  | grep -q . && echo "FALSE POSITIVE — should be silent" || echo "NEGATIVE TEST: OK"
 ```
 
-Expected output: `HOOK FIRES: OK`
+Expected output: `HOOK FIRES: OK` then `NEGATIVE TEST: OK`
 
 ### The opposite: forgetting memories
 
@@ -397,7 +419,7 @@ After removing, confirm what was deleted and from which systems.
 Check current status:
 
 ```bash
-mempalace status 2>/dev/null || python3 -m mempalace status 2>/dev/null || python -m mempalace status
+mempalace status 2>/dev/null || python3 -m mempalace status 2>/dev/null || python -m mempalace status 2>/dev/null || py -m mempalace status
 ```
 
 **If the palace is already initialized** — skip to the identity file step below. No
@@ -426,13 +448,13 @@ is inferred from a bare `mempalace init`). Substitute the user's answer or the d
 your platform. The `--yes` flag is required in Claude Code's non-interactive shell:
 
 ```bash
-mempalace init <PATH> --yes 2>/dev/null || python3 -m mempalace init <PATH> --yes
+mempalace init <PATH> --yes 2>/dev/null || python3 -m mempalace init <PATH> --yes 2>/dev/null || python -m mempalace init <PATH> --yes 2>/dev/null || py -m mempalace init <PATH> --yes
 ```
 
 Confirm the MCP server is registered with Claude Code. Use whichever form works for the install method:
 
 ```bash
-# For pip installs (python3 -m form works):
+# For pip installs (substitute the interpreter that resolved in Phase 0 — python3, python, or py):
 claude mcp add mempalace -- python3 -m mempalace.mcp_server
 
 # For pipx installs (use the mempalace binary directly):
@@ -522,8 +544,9 @@ cross-session observations.
 First, confirm the port (detected in Phase 0 — substitute if it differs from 37777):
 
 ```bash
-# Re-detect if needed:
-python3 -c "
+# Re-detect if needed (resolve $PY with the Phase 0 probe first):
+PY=""; for c in python3 python py; do "$c" -c "pass" >/dev/null 2>&1 && { PY="$c"; break; }; done
+"$PY" -c "
 import json, os
 path = os.path.expanduser('~/.claude-mem/settings.json')
 try:
@@ -537,10 +560,17 @@ except:
 Check if it's already running (substitute your detected port if not 37777):
 
 ```bash
-curl -s http://127.0.0.1:37777/api/health | python3 -m json.tool
+curl -s http://127.0.0.1:37777/api/health
 ```
 
-If the health check returns `{"status":"ok",...}` — the worker is running. No action needed.
+If the health check returns `{"status":"ok",...}` — the worker is running. Check the
+`version` field in the same response: if it's below `13`, update the plugin
+(`claude plugin update claude-mem@thedotmack`, then restart Claude Code so the new worker
+starts) — 12.x observation generation fails silently (see The Tooling section). If the
+update leaves the worker failing to boot with a missing-module error, run `bun install`
+inside the new version's cache directory
+(`~/.claude/plugins/cache/thedotmack/claude-mem/<version>/`) — the updater does not always
+install new dependencies.
 
 If it fails to respond, the worker starts automatically when Claude Code loads the plugin.
 If it still fails after a restart:
@@ -582,8 +612,8 @@ entities.json
 
 ```bash
 cd /path/to/project
-mempalace init . --yes 2>/dev/null || python3 -m mempalace init . --yes
-mempalace mine . 2>/dev/null || python3 -m mempalace mine .
+mempalace init . --yes 2>/dev/null || python3 -m mempalace init . --yes 2>/dev/null || python -m mempalace init . --yes 2>/dev/null || py -m mempalace init . --yes
+mempalace mine . 2>/dev/null || python3 -m mempalace mine . 2>/dev/null || python -m mempalace mine . 2>/dev/null || py -m mempalace mine .
 ```
 
 > **`--yes` is required** — `mempalace init` is interactive by default and will block with
@@ -618,14 +648,26 @@ the files don't appear in Explorer:
 attrib +h mempalace.yaml entities.json
 ```
 
-### 7d. Create local file memory directory
+### 7d. Local file memory directory — now native to Claude Code
+
+**Recent Claude Code versions maintain this system natively.** Claude Code creates
+`~/.claude/projects/<project-key>/memory/` itself, loads `MEMORY.md` into context each
+session, and instructs Claude to maintain typed memory files there. Check first:
 
 ```bash
-# macOS/Linux:
-mkdir -p ~/.claude/projects/$(python3 -c "import os; print(os.getcwd().replace('/', '--').lstrip('-'))")/memory
+ls ~/.claude/projects/*/memory/MEMORY.md 2>/dev/null
+```
 
-# Windows (if python3 is not found, use python):
-mkdir -p ~/.claude/projects/$(python -c "import os; print(os.getcwd().replace('/', '--').replace('\\\\', '--').lstrip('-'))")/memory
+If a memory directory keyed to this project already exists — **done; skip the rest of
+this step.** This system went from hand-rolled to first-party since this guide was first
+written, which makes it the most reliable layer after CLAUDE.md itself.
+
+Only on older Claude Code versions without native memory, create it manually:
+
+```bash
+# All platforms (resolve $PY with the Phase 0 probe first):
+PY=""; for c in python3 python py; do "$c" -c "pass" >/dev/null 2>&1 && { PY="$c"; break; }; done
+mkdir -p ~/.claude/projects/$("$PY" -c "import os; print(os.getcwd().replace('\\\\', '--').replace('/', '--').lstrip('-'))")/memory
 ```
 
 Then create `MEMORY.md` in that directory:
@@ -697,12 +739,12 @@ Create or update `.claude/settings.local.json` in the project root:
         "hooks": [
           {
             "type": "command",
-            "command": "PYTHONIOENCODING=utf-8 mempalace wake-up --wing <WING_NAME> 2>/dev/null || PYTHONIOENCODING=utf-8 python3 -m mempalace wake-up --wing <WING_NAME> 2>/dev/null || true",
+            "command": "PYTHONIOENCODING=utf-8 mempalace wake-up --wing <WING_NAME> 2>/dev/null || PYTHONIOENCODING=utf-8 python3 -m mempalace wake-up --wing <WING_NAME> 2>/dev/null || PYTHONIOENCODING=utf-8 python -m mempalace wake-up --wing <WING_NAME> 2>/dev/null || PYTHONIOENCODING=utf-8 py -m mempalace wake-up --wing <WING_NAME> 2>/dev/null || true",
             "statusMessage": "Recalling <ProjectName> palace context..."
           },
           {
             "type": "command",
-            "command": "python3 -c \"\nimport urllib.request, json, os\nproject = os.path.basename(os.getcwd())\ntry:\n    settings_path = os.path.expanduser('~/.claude-mem/settings.json')\n    port = json.load(open(settings_path)).get('CLAUDE_MEM_WORKER_PORT', '37777')\nexcept:\n    port = '37777'\ntry:\n    r = urllib.request.urlopen(f'http://127.0.0.1:{port}/api/context/recent?project={project}&limit=8', timeout=3)\n    data = json.loads(r.read().decode())\n    text = ' '.join(c.get('text','') for c in data.get('content',[]) if c.get('type')=='text').strip()\n    if text and 'No previous sessions' not in text:\n        ctx = f'CLAUDE-MEM recent observations for {project}:\\n{text}'\n        print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': ctx}}))\nexcept:\n    pass\n\" 2>/dev/null || true",
+            "command": "PY=\"\"; for c in python3 python py; do \"$c\" -c pass >/dev/null 2>&1 && { PY=\"$c\"; break; }; done; [ -z \"$PY\" ] && exit 0; \"$PY\" -c \"\nimport urllib.request, json, os\nproject = os.path.basename(os.getcwd())\ntry:\n    settings_path = os.path.expanduser('~/.claude-mem/settings.json')\n    port = json.load(open(settings_path)).get('CLAUDE_MEM_WORKER_PORT', '37777')\nexcept:\n    port = '37777'\ntry:\n    r = urllib.request.urlopen(f'http://127.0.0.1:{port}/api/context/recent?project={project}&limit=8', timeout=3)\n    data = json.loads(r.read().decode())\n    text = ' '.join(c.get('text','') for c in data.get('content',[]) if c.get('type')=='text').strip()\n    if text and 'No previous sessions' not in text:\n        ctx = f'CLAUDE-MEM recent observations for {project}:\\n{text}'\n        print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': ctx}}))\nexcept:\n    pass\n\" 2>/dev/null || true",
             "statusMessage": "Loading claude-mem session history..."
           }
         ]
@@ -715,8 +757,9 @@ Create or update `.claude/settings.local.json` in the project root:
 Replace `<WING_NAME>` with the lowercase project name and `<ProjectName>` with the display
 name.
 
-> **Windows:** Replace `python3` with `python` in both `command` strings above if Phase 0
-> showed that only `python` resolves on your machine.
+> **No per-platform substitution needed:** the wake-up command falls through
+> `mempalace` → `python3 -m` → `python -m` → `py -m`, and the claude-mem command resolves
+> its interpreter at run time — the same strings work on every platform.
 
 **[ASK USER]** "What is the MemPalace wing name for this project? Suggested:
 `<lowercased directory name>`. Confirm or provide your preferred name."
@@ -724,7 +767,8 @@ name.
 Pipe-test the SessionStart claude-mem hook:
 
 ```bash
-echo '{}' | python3 -c "
+PY=""; for c in python3 python py; do "$c" -c "pass" >/dev/null 2>&1 && { PY="$c"; break; }; done
+echo '{}' | "$PY" -c "
 import urllib.request, json, os
 project = os.path.basename(os.getcwd())
 try:
@@ -768,34 +812,43 @@ preference to all four memory systems automatically.
 
 ---
 
-### Preference 2: Re-orient after long gaps + post-weekend recap
+### Preference 2: Session-gap recap (hook-backed)
 
-This preference has configurable thresholds. Before storing, ask:
+Earlier versions of this guide stored this as a pure behavioral preference — "if N hours
+have passed, recap" — and it never fired reliably, because nothing told Claude when the
+last session actually was. A preference without a signal is a wish. The mechanism is now
+a hook that computes the facts, paired with an assessment Claude makes against the first
+prompt.
 
-**[ASK USER]**
-> "This preference has a few configurable values — I'll suggest defaults, you can adjust
-> any of them:
->
-> 1. **New session gap** — how many hours since the last conversation before I should
->    proactively recap? *(suggested: 4 hours)*
-> 2. **Resumed conversation gap** — how many hours of inactivity in an existing conversation
->    before I should re-orient? *(suggested: 6 hours)*
-> 3. **Post-weekend recap** — on Mondays (or the first session after a weekend), would you
->    like a brief recap of what we were working on the previous week? *(suggested: yes)*
->
-> Confirm or adjust each value."
+**The hook** — [`scripts/recap-nudge.sh`](scripts/recap-nudge.sh) runs at SessionStart.
+It finds when the last session in the project ended (claude-mem's newest observation,
+falling back to transcript file times), and when the gap exceeds `RECAP_HOURS` (default 4)
+it injects the gap facts plus this directive — silent otherwise:
 
-Once confirmed, substitute the user's values into the preference text and store it:
+> Assess whether a recap would help before answering the first message: **recap** when the
+> prompt is investigatory ("trying to figure out why...") or resumes prior work ("let's
+> pick up..."); **skip or compress to one line** when the prompt is self-contained
+> ("execute plan.md") or unrelated to previous work. If recapping, pull recent claude-mem
+> observations and the MemPalace diary, state what was in flight and the likely next step,
+> and verify with the user before relying on stale details.
 
-> If more than **[GAP_1] hours** have passed since the last conversation, OR an existing
-> conversation is resumed after **[GAP_2] hours** of inactivity, proactively recap what we
-> were working on, where we left off, and what the next step was. Gently verify the user's
-> recollection before acting on details they provide — they may be less accurate on specifics
-> after a long gap. Goal: preserve momentum without the user needing to re-brief from scratch.
->
-> Additionally, on Mondays or the first session following a weekend break, open with a brief
-> recap of what was being worked on the previous week, even if the gap was less than [GAP_1]
-> hours — weekends interrupt working memory differently than shorter gaps.
+Post-weekend and multi-day gaps add a "lean toward a brief recap" note. Deliberately
+**not** included: a mid-conversation re-orient timer — scroll-back covers resumed
+conversations, so recap there only when the user asks.
+
+**To adopt it**, add to `.claude/settings.local.json` alongside the Phase 7f hooks (with
+the script available in the project, or fetched from this repo):
+
+```json
+{
+  "type": "command",
+  "command": "bash scripts/recap-nudge.sh 2>/dev/null || true",
+  "statusMessage": "Checking session gap..."
+}
+```
+
+**[ASK USER]** "Adopt the session-gap recap? Default threshold is 4 hours — confirm or
+adjust (set `RECAP_HOURS=<n>` in the command to change it)."
 
 ---
 
@@ -851,146 +904,192 @@ relationship context.
 
 ---
 
-## Phase 9 — Patch the PreCompact Hook (Required)
+## Phase 9 — Harden the Hooks + /compact Save Interceptor
 
-The MemPalace plugin ships with a PreCompact hook that **unconditionally blocks `/compact`**,
-making context compaction impossible without this fix. Apply it immediately after plugin
-installation, and re-apply after any MemPalace plugin update.
+> **History note:** before MemPalace 3.6.0, the stock PreCompact hook unconditionally
+> blocked `/compact` and the stock Stop hook printed noise after every reply — this phase
+> used to replace both wholesale. Upstream fixed both in 3.6.0 (hook logic moved into
+> `mempalace.hooks_cli`; compaction is allowed, the Stop hook is silent and ingests the
+> transcript itself). If your plugin is older than 3.6.0, update it first:
+> `claude plugin update mempalace@mempalace`.
 
-### Why this happens
+What remains is a small hardening patch plus the save-before-compact interceptor.
 
-The hook always outputs `{"decision":"block"}` with no mechanism to signal that a save has
-already occurred, so `/compact` loops forever.
+### Part 1 — Interpreter-fallback patch (`py-fallback-v3`)
 
-### The fix — sentinel file pattern
+The stock hooks resolve Python with `command -v python3` / `python` — a PATH lookup that
+Windows Store stubs pass while failing to actually run, which kills both hooks silently.
+The patched versions in this repository ([`hooks/`](hooks/)) keep upstream's logic and only
+replace the resolver with a functional probe (`python3` → `python` → `py`, each tested with
+a real import).
 
-The patched file is in this repository at [`hooks/mempal-precompact-hook.sh`](hooks/mempal-precompact-hook.sh).
-Copy it to **both** of the following locations:
+Apply to **both** install locations — the marketplace copy and every cache version dir:
 
-1. `~/.claude/plugins/cache/mempalace/mempalace/<version>/hooks/mempal-precompact-hook.sh`
-2. `~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-precompact-hook.sh`
+1. `~/.claude/plugins/cache/mempalace/mempalace/<version>/hooks/`
+2. `~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/`
 
-Find the version directory, then copy. The cache path may not exist on all installs —
-the copy is conditional; the marketplaces path is always the authoritative one:
-
-```bash
-HOOK_SRC="<path-to-this-repo>/hooks/mempal-precompact-hook.sh"
-
-# Always copy to the marketplaces location (required)
-cp "$HOOK_SRC" ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-precompact-hook.sh
-chmod +x ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-precompact-hook.sh
-
-# Copy to the cache location only if it exists
-if [ -d ~/.claude/plugins/cache/mempalace/mempalace/ ]; then
-  VERSION=$(ls ~/.claude/plugins/cache/mempalace/mempalace/ | head -1)
-  cp "$HOOK_SRC" ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-precompact-hook.sh
-  chmod +x ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-precompact-hook.sh
-fi
-```
-
-After patching, prime the sentinel so the very first `/compact` succeeds without triggering
-a forced save cycle (one-time only):
+**If this repository is cloned locally** (recommended — enables self-healing):
 
 ```bash
-touch ~/.mempalace-precompact-ready
+bash <path-to-this-repo>/scripts/sync-hooks.sh
 ```
 
-### What the patch does
+`sync-hooks.sh` compares the canonical hooks against every installed copy and re-applies on
+mismatch. Add it as a SessionStart hook in a project you open often, and plugin-update
+drift heals itself:
 
-The patched hook blocks **once** to prompt a save, then allows compaction on the retry.
-A sentinel file in the home directory tracks whether the save prompt has already fired.
-The Stop hook already writes a baseline record every session, so the prompt is a safety net
-rather than the only save mechanism.
+```json
+{
+  "type": "command",
+  "command": "bash scripts/sync-hooks.sh 2>/dev/null | grep -v \"all hook patches in sync\" || true",
+  "statusMessage": "Checking hook patches for drift..."
+}
+```
 
-### Compacting after an explicit save
-
-If you write a diary entry *before* running `/compact` (the recommended workflow), the hook
-will still block on the first attempt — because the sentinel was never set by a prior blocked
-run. This is expected. Just touch the sentinel manually and run `/compact` again:
+**Without a local clone**, fetch and copy directly:
 
 ```bash
-touch ~/.mempalace-precompact-ready
-# then run /compact
+BASE="https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/master/hooks"
+for f in mempal-precompact-hook.sh mempal-stop-hook.sh; do
+  curl -s "$BASE/$f" -o /tmp/"$f"
+  cp /tmp/"$f" ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/"$f"
+  chmod +x ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/"$f"
+  for vdir in ~/.claude/plugins/cache/mempalace/mempalace/*/; do
+    [ -d "$vdir" ] && cp /tmp/"$f" "${vdir}hooks/$f" && chmod +x "${vdir}hooks/$f"
+  done
+done
 ```
 
-Claude can do this for you automatically — if you've just saved a diary entry and are about
-to compact, say "please compact now" and Claude should touch the sentinel before triggering
-`/compact`.
+**Part 2 — UserPromptSubmit hook in `settings.json`.** This hook intercepts `/compact` at
+the prompt submission stage — before the PreCompact hook ever fires. It injects a directive
+into Claude's context telling Claude to save to MemPalace first. Claude automatically runs
+`mempalace_diary_write` and `mempalace_add_drawer`, confirms the saves, and then `/compact`
+proceeds. No manual re-prompting required.
+
+Add this entry to the `hooks.UserPromptSubmit` array in `~/.claude/settings.json` (alongside
+the existing memory-trigger hook from Phase 8):
+
+```json
+{
+  "hooks": [
+    {
+      "type": "command",
+      "command": "PY=\"\"; for c in python3 python py; do \"$c\" -c pass >/dev/null 2>&1 && { PY=\"$c\"; break; }; done; [ -z \"$PY\" ] && exit 0; \"$PY\" -c \"\nimport json, sys, re\ndata = json.load(sys.stdin)\nprompt = (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''\nif re.search(r'^\\\\s*/compact\\\\b', prompt, re.IGNORECASE):\n    msg = ('PRE-COMPACT SAVE REQUIRED. The user has requested /compact. Before compaction runs, you MUST save the current session to MemPalace. Execute these steps NOW, in order, before doing anything else:\\\\n'\n        '1. Call mempalace_diary_write with a thorough AAAK-compressed summary of this entire session (decisions made, code written, problems solved, context that would be lost).\\\\n'\n        '2. Call mempalace_add_drawer for any verbatim quotes, specific code snippets, or discrete facts that deserve their own drawer.\\\\n'\n        '3. Optionally call mempalace_kg_add for any new entity relationships discovered this session.\\\\n'\n        'After completing all saves, confirm to the user what was saved, then the /compact will proceed automatically.')\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': msg}}))\n\" 2>/dev/null || true",
+      "statusMessage": "Preparing MemPalace save before compact..."
+    }
+  ]
+}
+```
+
+### Why this approach
+
+The PreCompact hook is a bash script — it can display messages but cannot invoke Claude tool
+calls. The old sentinel pattern blocked compaction and showed a message, but Claude only acted
+on it if the user explicitly re-prompted. The `UserPromptSubmit` hook fires while Claude is
+still in conversation mode and can respond to directives, so the saves happen automatically.
 
 ---
 
-## Phase 10 — Patch the Stop Hook (Required)
+## Phase 10 — The Stop Hook (Now Handled by Phase 9)
 
-### What the Stop hook actually does
+The Stop hook fires after **every single Claude response** — not just at session end. Two
+historical problems are fixed in MemPalace ≥ 3.6.0: the stock hook is now silent (no chat
+noise) and ingests the session transcript itself, so sessions no longer disappear without
+a trace when nobody saves explicitly.
 
-The Stop hook fires after **every single Claude response** — not just when you close the
-window or end a session. It runs constantly in the background throughout normal conversation.
-
-The default hook outputs its save-prompt as raw visible text in the chat after every reply,
-which is noisy. More critically, the default hook only *asks* Claude to save — if Claude
-doesn't explicitly call `mempalace_diary_write` and `mempalace_add_drawer` in response,
-nothing gets recorded. Sessions can silently disappear with no memory trace at all.
-
-### The fix — two goals in one patch
-
-1. **Suppresses UI noise** — emits nothing to the chat window (the only reliable method;
-   `suppressOutput` is insufficient for Stop hooks — Claude Code displays Stop hook output
-   regardless, as a transparency feature that cannot be overridden via JSON)
-2. **Auto-saves a baseline to claude-mem** — writes a timestamped record automatically,
-   using the session ID as a sentinel so it fires only once per session
-
-Claude's richer `mempalace_diary_write` saves layer on top of this baseline.
-
-### Applying the patch
-
-The patched file is in this repository at [`hooks/mempal-stop-hook.sh`](hooks/mempal-stop-hook.sh).
-Copy it to **both** locations:
+The only remaining issue is the same interpreter-resolution flaw as Phase 9, and the same
+`py-fallback-v3` patch fixes it — `scripts/sync-hooks.sh` applies both hooks in one run,
+so if you completed Phase 9, this phase is already done. Verify:
 
 ```bash
-HOOK_SRC="<path-to-this-repo>/hooks/mempal-stop-hook.sh"
-
-# Always copy to the marketplaces location (required)
-cp "$HOOK_SRC" ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-stop-hook.sh
-chmod +x ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-stop-hook.sh
-
-# Copy to the cache location only if it exists
-if [ -d ~/.claude/plugins/cache/mempalace/mempalace/ ]; then
-  VERSION=$(ls ~/.claude/plugins/cache/mempalace/mempalace/ | head -1)
-  cp "$HOOK_SRC" ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-stop-hook.sh
-  chmod +x ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-stop-hook.sh
-fi
+grep -l "MEMPALACE-PATCH:py-fallback-v3" \
+  ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-stop-hook.sh \
+  ~/.claude/plugins/cache/mempalace/mempalace/*/hooks/mempal-stop-hook.sh
 ```
 
-> **Note:** Both patches will be overwritten if the MemPalace plugin auto-updates.
-> Re-apply them if the behaviours regress. The patch check in Phase 11 catches this
-> automatically.
+> **Retired:** earlier versions of this guide patched the Stop hook to write a baseline
+> "session active" heartbeat to claude-mem, guaranteeing a minimum trail per session.
+> claude-mem ≥ 13.x captures observations natively through its own hooks, so the heartbeat
+> is retired — double-writing only cluttered the history. The memory doctor (Phase 11)
+> monitors capture age instead, which is how a silent capture failure gets caught.
+
+> **Note:** Both patches will be overwritten whenever the MemPalace plugin updates.
+> The `sync-hooks.sh` SessionStart hook from Phase 9 heals this automatically; the
+> Phase 11 checks catch it manually.
 
 ---
 
-## Phase 11 — Verification Checklist
+## Phase 11 — Verification: the Memory Doctor
 
-Run through this checklist before closing the setup session.
+The primary verification is the **memory doctor** — a read-only script that reports what
+each system is actually *doing* (loaded? injecting? capturing? last observation when?),
+not what the config claims. It live-fires the saved hook commands with trigger and
+non-trigger inputs, which is the only test shape that catches quoting and interpreter
+breaks. Run it from the project root at setup completion, and any time a session feels
+like it started cold:
+
+```bash
+bash <path-to-this-repo>/scripts/memory-doctor.sh
+# or without a local clone:
+curl -s https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/master/scripts/memory-doctor.sh | bash
+```
+
+Expected: a checklist of `[ OK ]` lines ending in `== VERDICT: all systems delivering ==`.
+Any `[FAIL]` line names the phase or script that repairs it. The manual checks below cover
+the same ground piecemeal if you prefer to verify by hand.
+
+### Optional: monthly tune-up nudge
+
+The doctor stamps `~/.claude/memory-doctor.last` on every run. Wire
+[`scripts/tuneup-nudge.sh`](scripts/tuneup-nudge.sh) as a SessionStart hook (in a project
+you open regularly) and Claude will surface a one-line "tune-up due" reminder whenever the
+last doctor run is more than 30 days old — and stay silent otherwise:
+
+```json
+{
+  "type": "command",
+  "command": "bash scripts/tuneup-nudge.sh 2>/dev/null || true",
+  "statusMessage": "Checking tune-up cadence..."
+}
+```
+
+Set `TUNEUP_DAYS` in the command to change the cadence. Together the three scripts split
+the maintenance story: **sync-hooks heals what it can, the nudge keeps the cadence, the
+doctor sees everything.**
 
 ### Hook patch check
 
 Run at setup completion, and again at the start of any session after a plugin update.
-Each command should print the patch marker — if either prints nothing, re-apply from
-Phase 9 or 10.
+Each command should print matching file paths — if either prints nothing, re-apply from
+Phase 9 (`scripts/sync-hooks.sh`).
 
 ```bash
-grep -r "MEMPALACE-PATCH:precompact-sentinel-v1" ~/.claude/plugins/marketplaces/mempalace/ ~/.claude/plugins/cache/mempalace/ 2>/dev/null \
+grep -l "MEMPALACE-PATCH:py-fallback-v3" \
+  ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-precompact-hook.sh \
+  ~/.claude/plugins/cache/mempalace/mempalace/*/hooks/mempal-precompact-hook.sh 2>/dev/null \
   && echo "PreCompact patch: OK" || echo "PreCompact patch: MISSING — re-apply Phase 9"
 
-grep -r "MEMPALACE-PATCH:stop-suppress-v1" ~/.claude/plugins/marketplaces/mempalace/ ~/.claude/plugins/cache/mempalace/ 2>/dev/null \
-  && echo "Stop patch: OK" || echo "Stop patch: MISSING — re-apply Phase 10"
+grep -l "MEMPALACE-PATCH:py-fallback-v3" \
+  ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-stop-hook.sh \
+  ~/.claude/plugins/cache/mempalace/mempalace/*/hooks/mempal-stop-hook.sh 2>/dev/null \
+  && echo "Stop patch: OK" || echo "Stop patch: MISSING — re-apply Phase 9"
+
+PY=""; for c in python3 python py; do "$c" -c "pass" >/dev/null 2>&1 && { PY="$c"; break; }; done
+"$PY" -c "
+import json, os
+d = json.load(open(os.path.expanduser('~/.claude/settings.json')))
+hooks = d.get('hooks', {}).get('UserPromptSubmit', [])
+found = any('/compact' in json.dumps(h) for h in hooks)
+print('UserPromptSubmit /compact hook: OK' if found else 'UserPromptSubmit /compact hook: MISSING — re-apply Phase 9 Part 2')
+" 2>/dev/null || echo "UserPromptSubmit /compact hook: CHECK FAILED — no working python; verify manually"
 ```
 
 ### Full setup checklist
 
 - [ ] Patch check above passes for both hooks
-- [ ] `mempalace status` (or `python3 -m mempalace status`) shows a palace with at least one wing
+- [ ] `mempalace status` (or `<resolved interpreter> -m mempalace status`) shows a palace with at least one wing
 - [ ] `curl -s http://127.0.0.1:37777/api/health` returns `{"status":"ok",...}`
-- [ ] `~/.claude/settings.json` contains `enabledPlugins`, `extraKnownMarketplaces`, `permissions.allow`, and `hooks.UserPromptSubmit`
+- [ ] `~/.claude/settings.json` contains `enabledPlugins`, `extraKnownMarketplaces`, `permissions.allow`, and `hooks.UserPromptSubmit` with **two** hooks (memory trigger + `/compact` interceptor)
 - [ ] `.claude/settings.local.json` in the project root contains `hooks.SessionStart` with 2 hooks
 - [ ] `CLAUDE.md` exists in project root, ends with `@.claude/AI_CONTEXT.md` import
 - [ ] `.claude/AI_CONTEXT.md` exists and preferences section is filled in (not placeholder text)
@@ -1031,13 +1130,13 @@ after large mining runs (thousands of drawers).
 
 3. Attempt the built-in repair:
    ```bash
-   mempalace repair 2>/dev/null || python3 -m mempalace repair
+   mempalace repair 2>/dev/null || python3 -m mempalace repair 2>/dev/null || python -m mempalace repair 2>/dev/null || py -m mempalace repair
    ```
 
 4. If repair fails, rebuild the index from SQLite (the SQLite store is the source of
    truth; HNSW is a derived index):
    ```bash
-   mempalace rebuild-index 2>/dev/null || python3 -m mempalace rebuild-index
+   mempalace rebuild-index 2>/dev/null || python3 -m mempalace rebuild-index 2>/dev/null || python -m mempalace rebuild-index 2>/dev/null || py -m mempalace rebuild-index
    ```
 
 5. If still failing, locate and delete only the HNSW segment files (not the SQLite db):
@@ -1104,11 +1203,12 @@ With setup complete, here is what a normal working session looks like:
   before starting work. Each project gets its own MemPalace wing, CLAUDE.md, and memory
   directory. Your cross-project preferences travel with you automatically.
 
-- **Session ends** — the Stop hook writes a baseline record silently. Claude should also
-  write a richer diary entry at natural breakpoints (end of a feature, before compaction).
-  If you then run `/compact`, the PreCompact hook may block once asking for a save — if
-  you've already saved, just say "please compact now" and Claude will prime the sentinel
-  and proceed. The next session picks up with full context.
+- **Session ends** — claude-mem has been capturing observations throughout, and the
+  MemPalace Stop hook ingests the transcript silently. Claude should still write a richer
+  diary entry at natural breakpoints (end of a feature, before compaction). When you run
+  `/compact`, MemPalace saves happen automatically — Claude runs `mempalace_diary_write`
+  and `mempalace_add_drawer` before compaction begins, with no manual re-prompting
+  required. The next session picks up with full context.
 
 The goal is that over time, the gap between sessions stops feeling like starting over and
 starts feeling like continuing.

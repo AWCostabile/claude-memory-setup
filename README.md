@@ -9,16 +9,38 @@ Open any Claude Code session — in VS Code, the Claude desktop app, or anywhere
 paste the following prompt. Claude will fetch the setup guide and walk you through it.
 
 ```
-Please fetch the contents of this URL and follow the instructions it contains:
-https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/master/AGENT.md
+Please run the following command and follow the instructions in the output:
+curl -s https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/master/AGENT.md
 
 This is a system-wide setup, not tied to any specific project. Work through the phases in
 order and pause at [ASK USER] prompts for my input.
 ```
 
+> **Why `curl` instead of a URL fetch?** Claude's built-in web fetch tool summarises content
+> before returning it — which would garble the setup guide. `curl` retrieves the raw text
+> directly, so Claude reads the full instructions as written.
+
 > This sets up memory for your entire Claude Code environment — preferences, identity, and
 > hooks that travel with you across every project. Per-project configuration (Phase 7) can
 > be run separately for each project you work in, any time after the global setup is done.
+
+## Health check: the memory doctor
+
+Memory infrastructure fails **silently** — a hook dies and sessions just quietly start
+cold again. The memory doctor is the antidote: one read-only script that reports what each
+system is actually *doing* — loaded? injecting at session start? capturing? when was the
+last observation? — not what the config claims. It even live-fires your saved hook
+commands with trigger and non-trigger inputs, the only test that catches quoting and
+interpreter breaks.
+
+```bash
+curl -s https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/master/scripts/memory-doctor.sh | bash
+```
+
+Run it from any project root whenever a session feels like it started cold. Expected
+output is a checklist of `[ OK ]` lines ending in `== VERDICT: all systems delivering ==`;
+any failure line names the fix. (Fun fact: v1 of this script found three independent
+silent failures on the machine it was written on.)
 
 ## The problem
 
@@ -33,9 +55,9 @@ _See [Author's Note](#authors-note) below for more background._
 | System                | What it is                                      | What it does                                                                                                             |
 | --------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | **CLAUDE.md**         | A markdown file in your project root            | Auto-loaded every session — project conventions, architecture, gotchas. Highest reliability: no plugins, no network.     |
-| **Local file memory** | `.md` files in `~/.claude/projects/.../memory/` | Cross-session preferences and feedback, outside the repo. Populated when you say "please remember...".                   |
+| **Local file memory** | `.md` files in `~/.claude/projects/.../memory/` | Cross-session preferences and feedback, outside the repo. Recent Claude Code versions maintain this **natively** — the guide verifies and builds on it. |
 | **MemPalace**         | Python package (`pip install mempalace`)        | Semantic knowledge palace mined from your project files. Surfaces relevant context at session start via wake-up command. |
-| **claude-mem**        | Bun HTTP worker on `localhost:37777`            | Captures what actually happened in each session — decisions, features, bugs. Auto-saves a baseline record every session. |
+| **claude-mem**        | Bun HTTP worker on `localhost:37777`            | Watches each session through its own hooks and generates narrative observations of what actually happened — decisions, features, bugs. Use v13+ (see AGENT.md Phase 6). |
 
 ### How they connect
 
@@ -97,7 +119,12 @@ opening Claude Code inside a project and saying:
 ## Prerequisites
 
 - macOS, Linux, or Windows — mobile platforms are not supported due to OS restrictions
-- Python 3.9+
+  (on Windows, hooks run through Git Bash, which Claude Code uses natively — no separate
+  PowerShell variants needed)
+- Python 3.9+ that actually runs — on Windows, the Microsoft Store ships stub
+  `python`/`python3` executables that exist on PATH but only print an error; everything in
+  this guide probes interpreters functionally and falls back to the `py` launcher, so a
+  broken stub won't silently kill your memory
 - [Bun](https://bun.sh) — required by the claude-mem worker
 - [Claude Code](https://claude.ai/code) installed and authenticated
 
@@ -107,20 +134,30 @@ opening Claude Code inside a project and saying:
 claude-memory-setup/
 ├── README.md       ← you are here (human overview)
 ├── AGENT.md        ← the executable setup plan (Claude reads and follows this)
-└── hooks/
-    ├── mempal-stop-hook.sh        ← patched Stop hook (Phase 10)
-    └── mempal-precompact-hook.sh  ← patched PreCompact hook (Phase 9)
+├── hooks/
+│   ├── mempal-stop-hook.sh        ← hardened Stop hook (Phases 9–10)
+│   └── mempal-precompact-hook.sh  ← hardened PreCompact hook (Phase 9)
+└── scripts/
+    ├── memory-doctor.sh           ← one-glance impact audit of all four systems
+    ├── sync-hooks.sh              ← drift-repair: re-applies hook patches after plugin updates
+    ├── tuneup-nudge.sh            ← monthly "tune-up due" reminder at session start
+    └── recap-nudge.sh             ← session-gap facts + assess-first recap directive
 ```
 
-The `hooks/` directory exists because two of the MemPalace plugin hooks ship broken and
-must be patched after installation. The patched versions are here so Claude can copy them
-directly rather than reconstructing them from code blocks.
+The `hooks/` directory holds the canonical hardened versions of two MemPalace plugin
+hooks. Historically they replaced broken stock behavior (a PreCompact hook that blocked
+`/compact` unconditionally, a Stop hook that spammed the chat); MemPalace 3.6.0 fixed
+both upstream — which is exactly what we hoped for — so today's patches only harden
+interpreter resolution (the stock `python3`/`python` lookup dies on Windows machines where
+the Microsoft Store stubs shadow real Python; the patched chain probes functionally and
+falls back to `py`).
 
 ## Re-running for a new project
 
-The setup has a global phase (Phases 0–8, run once per machine) and a per-project phase
-(Phase 7, run for each new project). Once the global setup is done, you can introduce any
-new project to Claude with:
+The setup guide runs Phases 0–11: global phases (run once per machine), one per-project
+phase (Phase 7, run for each new project), hook hardening (Phases 9–10), and verification
+(Phase 11, the memory doctor). Once the global setup is done, you can introduce any new
+project to Claude with:
 
 > "Please run the per-project memory setup for this project — global setup is already complete."
 
@@ -128,10 +165,19 @@ Claude will skip straight to Phase 7.
 
 ## Keeping the setup current
 
-The hook files in `hooks/` are the canonical patched versions. If the MemPalace plugin
-updates and overwrites them, re-apply from here. The setup guide includes a patch
-verification command that Claude can run at the start of any session to catch this
-automatically.
+The hook files in `hooks/` are canonical. Plugin updates overwrite the installed copies —
+that's not hypothetical; it's the designed failure mode of this architecture, and it
+happened on the authors' own machine. Two tools keep it healed:
+
+- **`scripts/sync-hooks.sh`** compares the canonical hooks against every installed copy
+  (marketplace + all cache version dirs) and re-applies on mismatch. Run with `--check`
+  for a report-only pass. Wire it as a SessionStart hook in a project you open daily
+  (AGENT.md Phase 9 shows how) and drift heals itself at session start.
+- **`scripts/memory-doctor.sh`** is the detection layer: it flags missing patches, dead
+  injection, stale capture, and broken hook commands — anything sync-hooks can't fix
+  it names the phase that can.
+- **`scripts/tuneup-nudge.sh`** keeps the cadence: wired as a SessionStart hook, it has
+  Claude remind you when the doctor hasn't run in 30+ days, and stays silent otherwise.
 
 ---
 
