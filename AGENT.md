@@ -104,12 +104,20 @@ where you want Claude to surface relevant past decisions without reading everyth
 
 ### claude-mem
 A background HTTP worker (runs on `localhost:37777`) that maintains a cross-session
-observation log. It stores timestamped records of what happened in each session — decisions
-made, features built, bugs fixed — and surfaces them at session start via a hook. Unlike
-MemPalace (which is mined from files), claude-mem captures *conversation history*: what
-Claude and you actually did together. It also auto-saves a baseline record every session
-via the Stop hook, so there's always a minimum trail even if no explicit save is made.
-Powered by Bun; needs to be running when Claude Code is open.
+observation log. It watches each session through its own hooks, generates timestamped
+narrative observations of what happened — decisions made, features built, bugs fixed —
+and surfaces them at session start. Unlike MemPalace (which is mined from files),
+claude-mem captures *conversation history*: what Claude and you actually did together.
+
+**Worker lifecycle (worth knowing):** the plugin's own SessionStart hook boots the worker
+when a Claude Code session opens; it keeps running in the background afterwards.
+`~/.claude-mem/supervisor.json` tracks its processes, logs live in `~/.claude-mem/logs/`,
+and `curl -s http://127.0.0.1:37777/api/health` tells you if it's alive. **Use plugin
+version ≥ 13.x** — 12.x generated observations by shelling out to the `claude` CLI in a way
+that can fail silently forever (every session summary reads "failed — no summary
+available"); 13.x authenticates directly via OAuth token and works. The memory doctor
+(Phase 11) checks capture age so a silent failure can't go unnoticed for months again.
+Powered by Bun.
 
 ### How they connect
 
@@ -124,10 +132,10 @@ During session
   → "please remember X" triggers hook
       → stores to all four systems simultaneously
 
-Session ends
-  → Stop hook fires silently
-      → writes baseline observation to claude-mem (automatic)
-      → Claude writes richer diary entry at natural breakpoints (explicit)
+Throughout the session
+  → claude-mem's own hooks capture observations automatically
+  → Stop hook fires silently after each reply (MemPalace transcript ingestion)
+  → Claude writes richer diary entries at natural breakpoints (explicit)
 ```
 
 ---
@@ -139,7 +147,7 @@ Session ends
 | **CLAUDE.md**         | Project conventions auto-loaded every session | Written by Claude and/or by you manually             |
 | **Local file memory** | Typed `.md` preference/project/feedback files | Written when you say "remember X"                    |
 | **MemPalace**         | Searchable semantic knowledge palace          | Mined from project files + written on request        |
-| **claude-mem**        | Cross-session observation history             | Auto-captured via Stop hook + direct HTTP write      |
+| **claude-mem**        | Cross-session observation history             | Auto-captured natively by the plugin (v13+)          |
 
 ---
 
@@ -200,7 +208,7 @@ except:
 > **Port note:** Step 8 detects the actual claude-mem worker port from `~/.claude-mem/settings.json`.
 > The default is `37777`, but some installs use a different port (e.g. `37701`). Note the
 > detected `CLAUDE_MEM_PORT` value — **substitute it wherever `37777` appears in this guide**
-> (Phases 4, 6, 7f, and the Stop hook).
+> (Phases 4, 6, and 7f).
 
 **[ASK USER]** If Bun is not installed: "Bun is required by the claude-mem worker. Shall I
 install it now?"
@@ -555,7 +563,14 @@ Check if it's already running (substitute your detected port if not 37777):
 curl -s http://127.0.0.1:37777/api/health
 ```
 
-If the health check returns `{"status":"ok",...}` — the worker is running. No action needed.
+If the health check returns `{"status":"ok",...}` — the worker is running. Check the
+`version` field in the same response: if it's below `13`, update the plugin
+(`claude plugin update claude-mem@thedotmack`, then restart Claude Code so the new worker
+starts) — 12.x observation generation fails silently (see The Tooling section). If the
+update leaves the worker failing to boot with a missing-module error, run `bun install`
+inside the new version's cache directory
+(`~/.claude/plugins/cache/thedotmack/claude-mem/<version>/`) — the updater does not always
+install new dependencies.
 
 If it fails to respond, the worker starts automatically when Claude Code loads the plugin.
 If it still fails after a restart:
@@ -633,7 +648,21 @@ the files don't appear in Explorer:
 attrib +h mempalace.yaml entities.json
 ```
 
-### 7d. Create local file memory directory
+### 7d. Local file memory directory — now native to Claude Code
+
+**Recent Claude Code versions maintain this system natively.** Claude Code creates
+`~/.claude/projects/<project-key>/memory/` itself, loads `MEMORY.md` into context each
+session, and instructs Claude to maintain typed memory files there. Check first:
+
+```bash
+ls ~/.claude/projects/*/memory/MEMORY.md 2>/dev/null
+```
+
+If a memory directory keyed to this project already exists — **done; skip the rest of
+this step.** This system went from hand-rolled to first-party since this guide was first
+written, which makes it the most reliable layer after CLAUDE.md itself.
+
+Only on older Claude Code versions without native memory, create it manually:
 
 ```bash
 # All platforms (resolve $PY with the Phase 0 probe first):
@@ -866,43 +895,60 @@ relationship context.
 
 ---
 
-## Phase 9 — Patch the PreCompact Hook (Required)
+## Phase 9 — Harden the Hooks + /compact Save Interceptor
 
-The MemPalace plugin ships with a PreCompact hook that **unconditionally blocks `/compact`**,
-making context compaction impossible without this fix. Apply it immediately after plugin
-installation, and re-apply after any MemPalace plugin update.
+> **History note:** before MemPalace 3.6.0, the stock PreCompact hook unconditionally
+> blocked `/compact` and the stock Stop hook printed noise after every reply — this phase
+> used to replace both wholesale. Upstream fixed both in 3.6.0 (hook logic moved into
+> `mempalace.hooks_cli`; compaction is allowed, the Stop hook is silent and ingests the
+> transcript itself). If your plugin is older than 3.6.0, update it first:
+> `claude plugin update mempalace@mempalace`.
 
-### Why this happens
+What remains is a small hardening patch plus the save-before-compact interceptor.
 
-The hook always outputs `{"decision":"block"}` with no mechanism to signal that a save has
-already occurred, so `/compact` loops forever.
+### Part 1 — Interpreter-fallback patch (`py-fallback-v3`)
 
-### The fix — two parts
+The stock hooks resolve Python with `command -v python3` / `python` — a PATH lookup that
+Windows Store stubs pass while failing to actually run, which kills both hooks silently.
+The patched versions in this repository ([`hooks/`](hooks/)) keep upstream's logic and only
+replace the resolver with a functional probe (`python3` → `python` → `py`, each tested with
+a real import).
 
-This fix has two parts that work together:
+Apply to **both** install locations — the marketplace copy and every cache version dir:
 
-**Part 1 — Passthrough hook patch.** The patched hook simply allows compaction to proceed.
-Pre-compact saves are handled by Part 2, so no blocking is needed here.
+1. `~/.claude/plugins/cache/mempalace/mempalace/<version>/hooks/`
+2. `~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/`
 
-The patched file is in this repository at [`hooks/mempal-precompact-hook.sh`](hooks/mempal-precompact-hook.sh).
-Copy it to **both** of the following locations:
-
-1. `~/.claude/plugins/cache/mempalace/mempalace/<version>/hooks/mempal-precompact-hook.sh`
-2. `~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-precompact-hook.sh`
+**If this repository is cloned locally** (recommended — enables self-healing):
 
 ```bash
-HOOK_SRC="<path-to-this-repo>/hooks/mempal-precompact-hook.sh"
+bash <path-to-this-repo>/scripts/sync-hooks.sh
+```
 
-# Always copy to the marketplaces location (required)
-cp "$HOOK_SRC" ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-precompact-hook.sh
-chmod +x ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-precompact-hook.sh
+`sync-hooks.sh` compares the canonical hooks against every installed copy and re-applies on
+mismatch. Add it as a SessionStart hook in a project you open often, and plugin-update
+drift heals itself:
 
-# Copy to the cache location only if it exists
-if [ -d ~/.claude/plugins/cache/mempalace/mempalace/ ]; then
-  VERSION=$(ls ~/.claude/plugins/cache/mempalace/mempalace/ | head -1)
-  cp "$HOOK_SRC" ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-precompact-hook.sh
-  chmod +x ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-precompact-hook.sh
-fi
+```json
+{
+  "type": "command",
+  "command": "bash scripts/sync-hooks.sh 2>/dev/null | grep -v \"all hook patches in sync\" || true",
+  "statusMessage": "Checking hook patches for drift..."
+}
+```
+
+**Without a local clone**, fetch and copy directly:
+
+```bash
+BASE="https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/master/hooks"
+for f in mempal-precompact-hook.sh mempal-stop-hook.sh; do
+  curl -s "$BASE/$f" -o /tmp/"$f"
+  cp /tmp/"$f" ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/"$f"
+  chmod +x ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/"$f"
+  for vdir in ~/.claude/plugins/cache/mempalace/mempalace/*/; do
+    [ -d "$vdir" ] && cp /tmp/"$f" "${vdir}hooks/$f" && chmod +x "${vdir}hooks/$f"
+  done
+done
 ```
 
 **Part 2 — UserPromptSubmit hook in `settings.json`.** This hook intercepts `/compact` at
@@ -935,70 +981,70 @@ still in conversation mode and can respond to directives, so the saves happen au
 
 ---
 
-## Phase 10 — Patch the Stop Hook (Required)
+## Phase 10 — The Stop Hook (Now Handled by Phase 9)
 
-### What the Stop hook actually does
+The Stop hook fires after **every single Claude response** — not just at session end. Two
+historical problems are fixed in MemPalace ≥ 3.6.0: the stock hook is now silent (no chat
+noise) and ingests the session transcript itself, so sessions no longer disappear without
+a trace when nobody saves explicitly.
 
-The Stop hook fires after **every single Claude response** — not just when you close the
-window or end a session. It runs constantly in the background throughout normal conversation.
-
-The default hook outputs its save-prompt as raw visible text in the chat after every reply,
-which is noisy. More critically, the default hook only *asks* Claude to save — if Claude
-doesn't explicitly call `mempalace_diary_write` and `mempalace_add_drawer` in response,
-nothing gets recorded. Sessions can silently disappear with no memory trace at all.
-
-### The fix — two goals in one patch
-
-1. **Suppresses UI noise** — emits nothing to the chat window (the only reliable method;
-   `suppressOutput` is insufficient for Stop hooks — Claude Code displays Stop hook output
-   regardless, as a transparency feature that cannot be overridden via JSON)
-2. **Auto-saves a baseline to claude-mem** — writes a timestamped record automatically,
-   using the session ID as a sentinel so it fires only once per session
-
-Claude's richer `mempalace_diary_write` saves layer on top of this baseline.
-
-### Applying the patch
-
-The patched file is in this repository at [`hooks/mempal-stop-hook.sh`](hooks/mempal-stop-hook.sh).
-Copy it to **both** locations:
+The only remaining issue is the same interpreter-resolution flaw as Phase 9, and the same
+`py-fallback-v3` patch fixes it — `scripts/sync-hooks.sh` applies both hooks in one run,
+so if you completed Phase 9, this phase is already done. Verify:
 
 ```bash
-HOOK_SRC="<path-to-this-repo>/hooks/mempal-stop-hook.sh"
-
-# Always copy to the marketplaces location (required)
-cp "$HOOK_SRC" ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-stop-hook.sh
-chmod +x ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-stop-hook.sh
-
-# Copy to the cache location only if it exists
-if [ -d ~/.claude/plugins/cache/mempalace/mempalace/ ]; then
-  VERSION=$(ls ~/.claude/plugins/cache/mempalace/mempalace/ | head -1)
-  cp "$HOOK_SRC" ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-stop-hook.sh
-  chmod +x ~/.claude/plugins/cache/mempalace/mempalace/$VERSION/hooks/mempal-stop-hook.sh
-fi
+grep -l "MEMPALACE-PATCH:py-fallback-v3" \
+  ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-stop-hook.sh \
+  ~/.claude/plugins/cache/mempalace/mempalace/*/hooks/mempal-stop-hook.sh
 ```
 
-> **Note:** Both patches will be overwritten if the MemPalace plugin auto-updates.
-> Re-apply them if the behaviours regress. The patch check in Phase 11 catches this
-> automatically.
+> **Retired:** earlier versions of this guide patched the Stop hook to write a baseline
+> "session active" heartbeat to claude-mem, guaranteeing a minimum trail per session.
+> claude-mem ≥ 13.x captures observations natively through its own hooks, so the heartbeat
+> is retired — double-writing only cluttered the history. The memory doctor (Phase 11)
+> monitors capture age instead, which is how a silent capture failure gets caught.
+
+> **Note:** Both patches will be overwritten whenever the MemPalace plugin updates.
+> The `sync-hooks.sh` SessionStart hook from Phase 9 heals this automatically; the
+> Phase 11 checks catch it manually.
 
 ---
 
-## Phase 11 — Verification Checklist
+## Phase 11 — Verification: the Memory Doctor
 
-Run through this checklist before closing the setup session.
+The primary verification is the **memory doctor** — a read-only script that reports what
+each system is actually *doing* (loaded? injecting? capturing? last observation when?),
+not what the config claims. It live-fires the saved hook commands with trigger and
+non-trigger inputs, which is the only test shape that catches quoting and interpreter
+breaks. Run it from the project root at setup completion, and any time a session feels
+like it started cold:
+
+```bash
+bash <path-to-this-repo>/scripts/memory-doctor.sh
+# or without a local clone:
+curl -s https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/master/scripts/memory-doctor.sh | bash
+```
+
+Expected: a checklist of `[ OK ]` lines ending in `== VERDICT: all systems delivering ==`.
+Any `[FAIL]` line names the phase or script that repairs it. The manual checks below cover
+the same ground piecemeal if you prefer to verify by hand.
 
 ### Hook patch check
 
 Run at setup completion, and again at the start of any session after a plugin update.
-Each command should print the patch marker — if either prints nothing, re-apply from
-Phase 9 or 10.
+Each command should print matching file paths — if either prints nothing, re-apply from
+Phase 9 (`scripts/sync-hooks.sh`).
 
 ```bash
-grep -r "MEMPALACE-PATCH:precompact-passthrough-v2" ~/.claude/plugins/marketplaces/mempalace/ ~/.claude/plugins/cache/mempalace/ 2>/dev/null \
+grep -l "MEMPALACE-PATCH:py-fallback-v3" \
+  ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-precompact-hook.sh \
+  ~/.claude/plugins/cache/mempalace/mempalace/*/hooks/mempal-precompact-hook.sh 2>/dev/null \
   && echo "PreCompact patch: OK" || echo "PreCompact patch: MISSING — re-apply Phase 9"
 
-grep -r "MEMPALACE-PATCH:stop-suppress-v2" ~/.claude/plugins/marketplaces/mempalace/ ~/.claude/plugins/cache/mempalace/ 2>/dev/null \
-  && echo "Stop patch: OK" || echo "Stop patch: MISSING — re-apply Phase 10"
+grep -l "MEMPALACE-PATCH:py-fallback-v3" \
+  ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/mempal-stop-hook.sh \
+  ~/.claude/plugins/cache/mempalace/mempalace/*/hooks/mempal-stop-hook.sh 2>/dev/null \
+  && echo "Stop patch: OK" || echo "Stop patch: MISSING — re-apply Phase 9"
 
 PY=""; for c in python3 python py; do "$c" -c "pass" >/dev/null 2>&1 && { PY="$c"; break; }; done
 "$PY" -c "
@@ -1129,11 +1175,12 @@ With setup complete, here is what a normal working session looks like:
   before starting work. Each project gets its own MemPalace wing, CLAUDE.md, and memory
   directory. Your cross-project preferences travel with you automatically.
 
-- **Session ends** — the Stop hook writes a baseline record silently. Claude should also
-  write a richer diary entry at natural breakpoints (end of a feature, before compaction).
-  When you run `/compact`, MemPalace saves happen automatically — Claude runs
-  `mempalace_diary_write` and `mempalace_add_drawer` before compaction begins, with no
-  manual re-prompting required. The next session picks up with full context.
+- **Session ends** — claude-mem has been capturing observations throughout, and the
+  MemPalace Stop hook ingests the transcript silently. Claude should still write a richer
+  diary entry at natural breakpoints (end of a feature, before compaction). When you run
+  `/compact`, MemPalace saves happen automatically — Claude runs `mempalace_diary_write`
+  and `mempalace_add_drawer` before compaction begins, with no manual re-prompting
+  required. The next session picks up with full context.
 
 The goal is that over time, the gap between sessions stops feeling like starting over and
 starts feeling like continuing.
