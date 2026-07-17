@@ -169,11 +169,8 @@ except Exception:
         warn "$FAILED_SUMMARIES of the last 5 session summaries are 'failed - no summary available' — generator may be broken (check ~/.claude-mem/logs/ for SDK_SPAWN errors)"
     fi
 fi
-if [ -f .claude/settings.local.json ] && grep -q 'api/context/recent\|api/observations' .claude/settings.local.json; then
-    ok "SessionStart claude-mem hook present in .claude/settings.local.json"
-else
-    warn "No SessionStart claude-mem hook in .claude/settings.local.json (Phase 7f)"
-fi
+# Note: claude-mem >= 13.x injects session context natively via its own plugin hook —
+# a custom SessionStart injector is only needed on older versions, so its absence is fine.
 
 # ── 5. Global hooks — full-command live fire tests ───────────────────────────
 echo ""
@@ -215,6 +212,23 @@ print(groups[$idx]['hooks'][0]['command'] if len(groups) > $idx else '')
     done
 else
     fail "Cannot test global hooks (no interpreter or no ~/.claude/settings.json)"
+fi
+
+# ── Injection footprint — what a session start costs in context tokens ──────
+echo ""
+echo "-- Session-start injection footprint --"
+WB=0; CB=0; MB=0; PB=0
+[ -n "$WAKE" ] && WB=$(printf '%s' "$WAKE" | wc -c | tr -d ' ')   # reuse section 3's wake-up run
+[ -n "$HEALTH" ] && CB=$(curl -s -m 5 "http://127.0.0.1:$PORT/api/context/recent?project=$(basename "$PWD")&limit=10" 2>/dev/null | wc -c | tr -d ' ')
+[ -n "$MEMDIR" ] && [ -f "$MEMDIR/MEMORY.md" ] && MB=$(wc -c < "$MEMDIR/MEMORY.md" | tr -d ' ')
+PB=$(cat CLAUDE.md .claude/AI_CONTEXT.md 2>/dev/null | wc -c | tr -d ' ')
+TOTB=$((WB + CB + MB + PB)); TOT_TOK=$((TOTB / 4))
+printf '       MemPalace wake-up: ~%s tok | claude-mem context: ~%s tok | MEMORY.md: ~%s tok | CLAUDE.md+AI_CONTEXT: ~%s tok\n' \
+    "$((WB/4))" "$((CB/4))" "$((MB/4))" "$((PB/4))"
+if [ "$TOT_TOK" -le 5000 ]; then
+    ok "Session-start footprint ~$TOT_TOK tokens"
+else
+    warn "Session-start footprint ~$TOT_TOK tokens — consider trimming (claude-mem CLAUDE_MEM_CONTEXT_OBSERVATIONS/SESSION_COUNT, wake-up size, CLAUDE.md length)"
 fi
 
 # ── Verdict ──────────────────────────────────────────────────────────────────

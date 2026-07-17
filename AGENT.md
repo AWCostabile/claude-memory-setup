@@ -741,11 +741,6 @@ Create or update `.claude/settings.local.json` in the project root:
             "type": "command",
             "command": "PYTHONIOENCODING=utf-8 mempalace wake-up --wing <WING_NAME> 2>/dev/null || PYTHONIOENCODING=utf-8 python3 -m mempalace wake-up --wing <WING_NAME> 2>/dev/null || PYTHONIOENCODING=utf-8 python -m mempalace wake-up --wing <WING_NAME> 2>/dev/null || PYTHONIOENCODING=utf-8 py -m mempalace wake-up --wing <WING_NAME> 2>/dev/null || true",
             "statusMessage": "Recalling <ProjectName> palace context..."
-          },
-          {
-            "type": "command",
-            "command": "PY=\"\"; for c in python3 python py; do \"$c\" -c pass >/dev/null 2>&1 && { PY=\"$c\"; break; }; done; [ -z \"$PY\" ] && exit 0; \"$PY\" -c \"\nimport urllib.request, json, os\nproject = os.path.basename(os.getcwd())\ntry:\n    settings_path = os.path.expanduser('~/.claude-mem/settings.json')\n    port = json.load(open(settings_path)).get('CLAUDE_MEM_WORKER_PORT', '37777')\nexcept:\n    port = '37777'\ntry:\n    r = urllib.request.urlopen(f'http://127.0.0.1:{port}/api/context/recent?project={project}&limit=8', timeout=3)\n    data = json.loads(r.read().decode())\n    text = ' '.join(c.get('text','') for c in data.get('content',[]) if c.get('type')=='text').strip()\n    if text and 'No previous sessions' not in text:\n        ctx = f'CLAUDE-MEM recent observations for {project}:\\n{text}'\n        print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': ctx}}))\nexcept:\n    pass\n\" 2>/dev/null || true",
-            "statusMessage": "Loading claude-mem session history..."
           }
         ]
       }
@@ -758,8 +753,15 @@ Replace `<WING_NAME>` with the lowercase project name and `<ProjectName>` with t
 name.
 
 > **No per-platform substitution needed:** the wake-up command falls through
-> `mempalace` → `python3 -m` → `python -m` → `py -m`, and the claude-mem command resolves
-> its interpreter at run time — the same strings work on every platform.
+> `mempalace` → `python3 -m` → `python -m` → `py -m` — the same string works on every
+> platform.
+
+> **claude-mem session context — no custom hook needed on v13+.** claude-mem ≥ 13.x
+> injects its recent-session context natively through its own plugin hook, so adding a
+> second injector here would double the context cost for the same information. Only on
+> older claude-mem versions (12.x), where native injection was unreliable, add a second
+> SessionStart hook that reads `/api/context/recent` and prints
+> `hookSpecificOutput.additionalContext` — and prefer updating the plugin instead.
 
 **[ASK USER]** "What is the MemPalace wing name for this project? Suggested:
 `<lowercased directory name>`. Confirm or provide your preferred name."
@@ -1090,7 +1092,7 @@ print('UserPromptSubmit /compact hook: OK' if found else 'UserPromptSubmit /comp
 - [ ] `mempalace status` (or `<resolved interpreter> -m mempalace status`) shows a palace with at least one wing
 - [ ] `curl -s http://127.0.0.1:37777/api/health` returns `{"status":"ok",...}`
 - [ ] `~/.claude/settings.json` contains `enabledPlugins`, `extraKnownMarketplaces`, `permissions.allow`, and `hooks.UserPromptSubmit` with **two** hooks (memory trigger + `/compact` interceptor)
-- [ ] `.claude/settings.local.json` in the project root contains `hooks.SessionStart` with 2 hooks
+- [ ] `.claude/settings.local.json` in the project root contains `hooks.SessionStart` with the MemPalace wake-up hook (claude-mem ≥ 13 injects its own context natively; optional nudge hooks per Phases 8 and 11)
 - [ ] `CLAUDE.md` exists in project root, ends with `@.claude/AI_CONTEXT.md` import
 - [ ] `.claude/AI_CONTEXT.md` exists and preferences section is filled in (not placeholder text)
 - [ ] `~/.claude/projects/<project-key>/memory/MEMORY.md` exists
