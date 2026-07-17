@@ -218,6 +218,7 @@ else
 fi
 
 # ── Verdict ──────────────────────────────────────────────────────────────────
+date +%s > "$HOME/.claude/memory-doctor.last" 2>/dev/null   # tune-up cadence stamp
 echo ""
 if [ "$FAILS" -eq 0 ] && [ "$WARNS" -eq 0 ]; then
     echo "== VERDICT: all systems delivering =="

@@ -1029,6 +1029,25 @@ Expected: a checklist of `[ OK ]` lines ending in `== VERDICT: all systems deliv
 Any `[FAIL]` line names the phase or script that repairs it. The manual checks below cover
 the same ground piecemeal if you prefer to verify by hand.
 
+### Optional: monthly tune-up nudge
+
+The doctor stamps `~/.claude/memory-doctor.last` on every run. Wire
+[`scripts/tuneup-nudge.sh`](scripts/tuneup-nudge.sh) as a SessionStart hook (in a project
+you open regularly) and Claude will surface a one-line "tune-up due" reminder whenever the
+last doctor run is more than 30 days old — and stay silent otherwise:
+
+```json
+{
+  "type": "command",
+  "command": "bash scripts/tuneup-nudge.sh 2>/dev/null || true",
+  "statusMessage": "Checking tune-up cadence..."
+}
+```
+
+Set `TUNEUP_DAYS` in the command to change the cadence. Together the three scripts split
+the maintenance story: **sync-hooks heals what it can, the nudge keeps the cadence, the
+doctor sees everything.**
+
 ### Hook patch check
 
 Run at setup completion, and again at the start of any session after a plugin update.

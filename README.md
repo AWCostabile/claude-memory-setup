@@ -139,7 +139,8 @@ claude-memory-setup/
 │   └── mempal-precompact-hook.sh  ← hardened PreCompact hook (Phase 9)
 └── scripts/
     ├── memory-doctor.sh           ← one-glance impact audit of all four systems
-    └── sync-hooks.sh              ← drift-repair: re-applies hook patches after plugin updates
+    ├── sync-hooks.sh              ← drift-repair: re-applies hook patches after plugin updates
+    └── tuneup-nudge.sh            ← monthly "tune-up due" reminder at session start
 ```
 
 The `hooks/` directory holds the canonical hardened versions of two MemPalace plugin
@@ -174,6 +175,8 @@ happened on the authors' own machine. Two tools keep it healed:
 - **`scripts/memory-doctor.sh`** is the detection layer: it flags missing patches, dead
   injection, stale capture, and broken hook commands — anything sync-hooks can't fix
   it names the phase that can.
+- **`scripts/tuneup-nudge.sh`** keeps the cadence: wired as a SessionStart hook, it has
+  Claude remind you when the doctor hasn't run in 30+ days, and stays silent otherwise.
 
 ---
 
