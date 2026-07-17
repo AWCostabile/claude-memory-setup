@@ -345,7 +345,7 @@ Merge the following `hooks` block into `~/.claude/settings.json` (preserve any e
         "hooks": [
           {
             "type": "command",
-            "command": "PY=\"\"; for c in python3 python py; do \"$c\" -c pass >/dev/null 2>&1 && { PY=\"$c\"; break; }; done; [ -z \"$PY\" ] && exit 0; \"$PY\" -c \"\nimport json, sys, re\ndata = json.load(sys.stdin)\nprompt = (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''\npatterns = [r\\\"i(?:'d)?(?:\\\\s+would|\\\\s+want)?\\\\s+(?:like\\\\s+)?(?:you\\\\s+)?to\\\\s+remember\\\",r\\\"please\\\\s+remember\\\",r\\\"remember\\\\s+(?:that|this)\\\",r\\\"can\\\\s+you\\\\s+remember\\\",r\\\"make\\\\s+a\\\\s+(?:note|mental\\\\s+note)\\\",r\\\"keep\\\\s+(?:this\\\\s+)?in\\\\s+mind\\\",r\\\"don'?t\\\\s+forget\\\",r\\\"note\\\\s+(?:that|this|for\\\\s+future)\\\",r\\\"store\\\\s+(?:this|that)\\\\s+(?:away|in\\\\s+memory)\\\"]\nif prompt and any(re.search(p, prompt, re.IGNORECASE) for p in patterns):\n    msg = ('MEMORY REQUEST DETECTED. Analyse what the user wants remembered, classify its scope, then store it in ALL applicable systems:\\\\n'\n        '1. MEMPALACE (mcp__plugin_mempalace_mempalace__mempalace_add_drawer): Always use for any durable knowledge. Pick the right wing (project name) and room (general/decisions/src/maps/etc). For cross-project preferences use wing=user-preferences, room=feedback.\\\\n'\n        '2. LOCAL FILE MEMORY (~/.claude/projects/<project>/memory/): Write a typed .md file (feedback_*.md, project_*.md, user_*.md, reference_*.md) and add an entry to MEMORY.md. For cross-project preferences also write to ~/.claude/projects/global/memory/ (create dir if needed).\\\\n'\n        '3. CLAUDE.md: Update the project CLAUDE.md only if this is a session-critical project convention that every future session must know immediately (code style, architectural rules, critical gotchas).\\\\n'\n        '4. CLAUDE-MEM (direct write): call POST http://127.0.0.1:37777/api/memory/save with JSON body {\\\"project\\\": \\\"<current project>\\\", \\\"type\\\": \\\"decision\\\", \\\"text\\\": \\\"<the memory>\\\", \\\"title\\\": \\\"<short title>\\\"}. Use type=decision for preferences/rules, type=discovery for project-specific findings. Derive project name from the current working directory basename. If the worker is unreachable, fall back to narrating the memory clearly in your response so the Stop hook captures it from the transcript.\\\\n'\n        'After storing, confirm to the user: what was saved, which of the 4 systems it went into, and why each was chosen or skipped.')\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': msg}}))\n\" 2>/dev/null || true",
+            "command": "PY=\"\"; for c in python3 python py; do \"$c\" -c pass >/dev/null 2>&1 && { PY=\"$c\"; break; }; done; [ -z \"$PY\" ] && exit 0; \"$PY\" -c \"\nimport json, sys, re\ndata = json.load(sys.stdin)\nprompt = data.get('prompt', '') or (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''\npatterns = [r\\\"i(?:'d)?(?:\\\\s+would|\\\\s+want)?\\\\s+(?:like\\\\s+)?(?:you\\\\s+)?to\\\\s+remember\\\",r\\\"please\\\\s+remember\\\",r\\\"remember\\\\s+(?:that|this)\\\",r\\\"can\\\\s+you\\\\s+remember\\\",r\\\"make\\\\s+a\\\\s+(?:note|mental\\\\s+note)\\\",r\\\"keep\\\\s+(?:this\\\\s+)?in\\\\s+mind\\\",r\\\"don'?t\\\\s+forget\\\",r\\\"note\\\\s+(?:that|this|for\\\\s+future)\\\",r\\\"store\\\\s+(?:this|that)\\\\s+(?:away|in\\\\s+memory)\\\"]\nif prompt and any(re.search(p, prompt, re.IGNORECASE) for p in patterns):\n    msg = ('MEMORY REQUEST DETECTED. Analyse what the user wants remembered, classify its scope, then store it in ALL applicable systems:\\\\n'\n        '1. MEMPALACE (mcp__plugin_mempalace_mempalace__mempalace_add_drawer): Always use for any durable knowledge. Pick the right wing (project name) and room (general/decisions/src/maps/etc). For cross-project preferences use wing=user-preferences, room=feedback.\\\\n'\n        '2. LOCAL FILE MEMORY (~/.claude/projects/<project>/memory/): Write a typed .md file (feedback_*.md, project_*.md, user_*.md, reference_*.md) and add an entry to MEMORY.md. For cross-project preferences also write to ~/.claude/projects/global/memory/ (create dir if needed).\\\\n'\n        '3. CLAUDE.md: Update the project CLAUDE.md only if this is a session-critical project convention that every future session must know immediately (code style, architectural rules, critical gotchas).\\\\n'\n        '4. CLAUDE-MEM (direct write): call POST http://127.0.0.1:37777/api/memory/save with JSON body {\\\"project\\\": \\\"<current project>\\\", \\\"type\\\": \\\"decision\\\", \\\"text\\\": \\\"<the memory>\\\", \\\"title\\\": \\\"<short title>\\\"}. Use type=decision for preferences/rules, type=discovery for project-specific findings. Derive project name from the current working directory basename. If the worker is unreachable, fall back to narrating the memory clearly in your response so the Stop hook captures it from the transcript.\\\\n'\n        'After storing, confirm to the user: what was saved, which of the 4 systems it went into, and why each was chosen or skipped.')\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': msg}}))\n\" 2>/dev/null || true",
             "statusMessage": "Checking for memory requests..."
           }
         ]
@@ -822,24 +822,32 @@ last session actually was. A preference without a signal is a wish. The mechanis
 a hook that computes the facts, paired with an assessment Claude makes against the first
 prompt.
 
-**The hook** — [`scripts/recap-nudge.sh`](scripts/recap-nudge.sh) runs at SessionStart.
-It finds when the last session in the project ended (claude-mem's newest observation,
-falling back to transcript file times), and when the gap exceeds `RECAP_HOURS` (default 4)
-it injects the gap facts plus this directive — silent otherwise:
+**Two hooks split the work so the model never has to notice anything:**
 
-> Assess whether a recap would help before answering the first message: **recap** when the
-> prompt is investigatory ("trying to figure out why...") or resumes prior work ("let's
-> pick up..."); **skip or compress to one line** when the prompt is self-contained
-> ("execute plan.md") or unrelated to previous work. If recapping, pull recent claude-mem
-> observations and the MemPalace diary, state what was in flight and the likely next step,
-> and verify with the user before relying on stale details.
+1. [`scripts/recap-nudge.sh`](scripts/recap-nudge.sh) (SessionStart) finds when the last
+   session in the project ended — claude-mem's newest observation, falling back to
+   transcript file times — and when the gap exceeds `RECAP_HOURS` (default 4) it stashes
+   the facts in a per-session state file. It injects nothing itself.
+2. [`scripts/recap-classify.sh`](scripts/recap-classify.sh) (UserPromptSubmit) consumes
+   that state on the **first prompt only** and classifies the prompt with regexes:
+   - **continuation/investigatory** ("let's pick up...", "trying to figure out why...")
+     → injects an imperative `RECAP REQUIRED` directive: review the injected session
+     context, open with a short recap (what was in flight, what was completed, likely
+     next step), verify with the user before relying on stale details.
+   - **self-contained/direct** ("execute plan.md", "just list...") → injects nothing.
+   - **ambiguous** → injects an assess-first directive and leaves it to the model.
 
-Post-weekend and multi-day gaps add a "lean toward a brief recap" note. Deliberately
-**not** included: a mid-conversation re-orient timer — scroll-back covers resumed
-conversations, so recap there only when the user asks.
+Classifying in the hook rather than asking the model to assess is what makes this work on
+small models: regexes decide, the model executes. Measured with
+[`scripts/compliance-test.sh`](scripts/compliance-test.sh): both branches pass on
+`claude-sonnet-5` and `claude-haiku-4-5` (the pure assess-first version was unreliable on
+both). Post-weekend and multi-day gaps add a "lean toward recapping" note in the facts.
+Deliberately **not** included: a mid-conversation re-orient timer — scroll-back covers
+resumed conversations, so recap there only when the user asks.
 
-**To adopt it**, add to `.claude/settings.local.json` alongside the Phase 7f hooks (with
-the script available in the project, or fetched from this repo):
+**To adopt it**, add both hooks to `.claude/settings.local.json` (with the scripts
+available in the project, or fetched from this repo) — the first under `SessionStart`,
+the second under `UserPromptSubmit`:
 
 ```json
 {
@@ -849,8 +857,16 @@ the script available in the project, or fetched from this repo):
 }
 ```
 
+```json
+{
+  "type": "command",
+  "command": "bash scripts/recap-classify.sh 2>/dev/null || true",
+  "statusMessage": "Classifying first prompt for recap..."
+}
+```
+
 **[ASK USER]** "Adopt the session-gap recap? Default threshold is 4 hours — confirm or
-adjust (set `RECAP_HOURS=<n>` in the command to change it)."
+adjust (set `RECAP_HOURS=<n>` in the SessionStart command to change it)."
 
 ---
 
@@ -976,7 +992,7 @@ the existing memory-trigger hook from Phase 8):
   "hooks": [
     {
       "type": "command",
-      "command": "PY=\"\"; for c in python3 python py; do \"$c\" -c pass >/dev/null 2>&1 && { PY=\"$c\"; break; }; done; [ -z \"$PY\" ] && exit 0; \"$PY\" -c \"\nimport json, sys, re\ndata = json.load(sys.stdin)\nprompt = (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''\nif re.search(r'^\\\\s*/compact\\\\b', prompt, re.IGNORECASE):\n    msg = ('PRE-COMPACT SAVE REQUIRED. The user has requested /compact. Before compaction runs, you MUST save the current session to MemPalace. Execute these steps NOW, in order, before doing anything else:\\\\n'\n        '1. Call mempalace_diary_write with a thorough AAAK-compressed summary of this entire session (decisions made, code written, problems solved, context that would be lost).\\\\n'\n        '2. Call mempalace_add_drawer for any verbatim quotes, specific code snippets, or discrete facts that deserve their own drawer.\\\\n'\n        '3. Optionally call mempalace_kg_add for any new entity relationships discovered this session.\\\\n'\n        'After completing all saves, confirm to the user what was saved, then the /compact will proceed automatically.')\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': msg}}))\n\" 2>/dev/null || true",
+      "command": "PY=\"\"; for c in python3 python py; do \"$c\" -c pass >/dev/null 2>&1 && { PY=\"$c\"; break; }; done; [ -z \"$PY\" ] && exit 0; \"$PY\" -c \"\nimport json, sys, re\ndata = json.load(sys.stdin)\nprompt = data.get('prompt', '') or (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''\nif re.search(r'^\\\\s*/compact\\\\b', prompt, re.IGNORECASE):\n    msg = ('PRE-COMPACT SAVE REQUIRED. The user has requested /compact. Before compaction runs, you MUST save the current session to MemPalace. Execute these steps NOW, in order, before doing anything else:\\\\n'\n        '1. Call mempalace_diary_write with a thorough AAAK-compressed summary of this entire session (decisions made, code written, problems solved, context that would be lost).\\\\n'\n        '2. Call mempalace_add_drawer for any verbatim quotes, specific code snippets, or discrete facts that deserve their own drawer.\\\\n'\n        '3. Optionally call mempalace_kg_add for any new entity relationships discovered this session.\\\\n'\n        'After completing all saves, confirm to the user what was saved, then the /compact will proceed automatically.')\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': msg}}))\n\" 2>/dev/null || true",
       "statusMessage": "Preparing MemPalace save before compact..."
     }
   ]

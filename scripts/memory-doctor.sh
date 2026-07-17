@@ -196,12 +196,14 @@ print(groups[$idx]['hooks'][0]['command'] if len(groups) > $idx else '')
         if [ -z "$CMD" ]; then
             fail "$label hook: not found in settings.json"
         else
+            # Real UserPromptSubmit events carry the text in the 'prompt' field — test with
+            # that shape, or the test passes while production silently fails (happened).
             case "$label" in
-                memory-trigger)  TRIGGER='{"message": "please remember the doctor test"}' ;;
-                *)               TRIGGER='{"message": "/compact"}' ;;
+                memory-trigger)  TRIGGER='{"prompt": "please remember the doctor test"}' ;;
+                *)               TRIGGER='{"prompt": "/compact"}' ;;
             esac
             OUT=$(echo "$TRIGGER" | bash -c "$CMD" 2>/dev/null)
-            NEG=$(echo '{"message": "unrelated"}' | bash -c "$CMD" 2>/dev/null)
+            NEG=$(echo '{"prompt": "unrelated"}' | bash -c "$CMD" 2>/dev/null)
             if echo "$OUT" | grep -q 'hookSpecificOutput' && [ -z "$NEG" ]; then
                 ok "$label hook fires on trigger, silent otherwise (live-fire test)"
             else

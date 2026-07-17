@@ -1,18 +1,20 @@
 #!/bin/bash
-# recap-nudge.sh — SessionStart hook: hand Claude the session-gap facts so it can
-# decide whether a recap would help.
+# recap-nudge.sh — SessionStart half of the session-gap recap: compute the gap, stash
+# the facts for the first-prompt classifier (scripts/recap-classify.sh).
 #
 # Finds when the last session in this project ended — claude-mem's newest observation
 # first, newest transcript file as fallback — and, when the gap exceeds RECAP_HOURS
-# (default 4), injects the gap plus an assessment directive. The directive tells Claude
-# to recap only when the user's first message suggests it would help (investigatory or
-# "pick up where we left off" prompts), and to skip or compress it when the prompt is
-# self-contained (e.g. "execute plan.md"). Prints nothing below the threshold.
+# (default 4), writes the facts to a per-session state file. It prints NOTHING itself:
+# the recap decision belongs to recap-classify.sh, which sees the user's actual first
+# prompt and can therefore inject an imperative directive only when a recap would help.
+# Weak models are bad at judging but fine at obeying — so the judgment lives in the
+# classifier's regexes, not in the model.
 #
-# Deliberately NOT a mid-conversation re-orient: scroll-back covers resumed
-# conversations; recap there only when the user asks.
+# Test knob: RECAP_FAKE_GAP_H=<hours> simulates a gap (source labeled 'simulated').
 
 RECAP_HOURS="${RECAP_HOURS:-4}"
+HOOK_INPUT=$(cat)      # heredoc below replaces python's stdin — pass hook JSON via env
+export HOOK_INPUT
 
 PY=""
 for c in python3 python py; do
@@ -24,6 +26,7 @@ done
 import glob
 import json
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -34,6 +37,13 @@ project = os.path.basename(os.getcwd())
 now = time.time()
 last = None          # epoch seconds of last session activity
 source = None
+
+# Session id from the hook's input JSON (via HOOK_INPUT env; the heredoc owns stdin).
+try:
+    session_id = json.loads(os.environ.get('HOOK_INPUT') or '{}').get('session_id', '')
+except Exception:
+    session_id = ''
+session_id = re.sub(r'[^A-Za-z0-9-]', '', session_id) or 'unknown'
 
 # Primary: claude-mem's newest observation for this project
 try:
@@ -86,21 +96,15 @@ if gap_h < threshold_h:
 
 when = time.strftime('%A %Y-%m-%d %H:%M', time.localtime(last))
 gap_txt = f'{gap_h:.0f} hours' if gap_h < 72 else f'{gap_h / 24:.0f} days'
-weekend = ''
+lean = ''
 if time.localtime(now).tm_wday == 0 and gap_h >= 12:
-    weekend = ' This is the first session after the weekend — lean toward a brief recap.'
+    lean = ' This is the first session after the weekend.'
 elif gap_h >= 48:
-    weekend = ' The gap is long — lean toward a brief recap.'
+    lean = ' The gap is long.'
 
-print(
-    f'SESSION GAP: the last session in this project ended around {when} '
-    f'({gap_txt} ago, per {source}).{weekend} When the user\'s first message arrives, '
-    f'assess whether a recap would help before answering: RECAP when the prompt is '
-    f'investigatory ("trying to figure out why...") or resumes prior work ("let\'s pick '
-    f'up..."); SKIP or compress to one line when the prompt is self-contained (e.g. '
-    f'"execute plan.md") or unrelated to previous work. If recapping: pull recent '
-    f'claude-mem observations and the MemPalace diary, state what was in flight and the '
-    f'likely next step, and verify with the user before relying on stale details.'
-)
+state = {'when': when, 'gap': gap_txt, 'source': source, 'lean': lean}
+tmp = os.environ.get('TMPDIR') or os.environ.get('TEMP') or '/tmp'
+with open(os.path.join(tmp, f'.recap-gap-{session_id}'), 'w', encoding='utf-8') as f:
+    json.dump(state, f)
 PYEOF
 exit 0
