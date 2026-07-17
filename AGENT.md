@@ -148,13 +148,16 @@ Session ends
 Run each of the following and report the output before proceeding.
 
 ```bash
-# 1. Python version (3.9+ required)
-#    macOS/Linux: python3 --version
-#    Windows: python --version  (if python3 is not found)
-python3 --version 2>/dev/null || python --version
+# 1. Python version (3.9+ required) — FUNCTIONAL probe, not just PATH lookup.
+#    On Windows, Microsoft Store stub executables named python/python3 sit on PATH and
+#    fail with a nonzero exit ("Python was not found..."). `command -v` finds them and
+#    lies. Only an actual execution proves an interpreter works. `py` (the Windows
+#    launcher) is probed last — it usually survives when the stubs are broken.
+PY=""; for c in python3 python py; do "$c" -c "pass" >/dev/null 2>&1 && { PY="$c"; break; }; done
+if [ -n "$PY" ]; then echo "Working interpreter: $PY ($("$PY" --version 2>&1))"; else echo "NO WORKING PYTHON"; fi
 
 # 2. pip available?
-python3 -m pip --version 2>/dev/null || python -m pip --version
+"$PY" -m pip --version 2>/dev/null || pip --version
 
 # 3. Bun (required by claude-mem worker)
 bun --version || echo "NOT FOUND"
@@ -162,8 +165,9 @@ bun --version || echo "NOT FOUND"
 # 4. Claude Code CLI
 claude --version
 
-# 5. Check if mempalace is already installed (CLI binary, then module)
-mempalace --version 2>/dev/null || python3 -m mempalace --version 2>/dev/null || python -m mempalace --version 2>/dev/null || echo "NOT INSTALLED"
+# 5. Check if mempalace is already installed (CLI binary, then module via $PY)
+#    Note: the CLI has no --version flag — probe with `status`.
+mempalace status >/dev/null 2>&1 || "$PY" -m mempalace status >/dev/null 2>&1 && echo "mempalace: INSTALLED" || echo "mempalace: NOT INSTALLED"
 
 # 6. Check global Claude settings file
 cat ~/.claude/settings.json 2>/dev/null || echo "FILE NOT FOUND"
@@ -172,7 +176,7 @@ cat ~/.claude/settings.json 2>/dev/null || echo "FILE NOT FOUND"
 ls ~/.claude-mem/ 2>/dev/null || echo "NOT FOUND"
 
 # 8. Detect claude-mem worker port (default 37777, may differ)
-python3 -c "
+"$PY" -c "
 import json, os
 path = os.path.expanduser('~/.claude-mem/settings.json')
 try:
@@ -183,9 +187,15 @@ except:
 " 2>/dev/null || echo "CLAUDE_MEM_PORT=37777"
 ```
 
-> **Windows note:** If `python3` is not found, use `python` throughout this guide.
-> Claude Code runs hooks via Git Bash on Windows, so bash syntax works — but the Python
-> command name may differ. Use whichever resolves correctly from the check above.
+> **Interpreter note (all platforms):** Every hook and command in this guide resolves
+> Python *functionally* with the probe from check 1 — `python3`, then `python`, then `py` —
+> rather than assuming a name. This matters most on Windows: the Microsoft Store ships
+> stub executables named `python`/`python3` that exist on PATH but only print an error,
+> and a Python upgrade (e.g. via the Python Install Manager) can silently break the
+> aliases while leaving `py` working. A hook hardcoded to one name dies silently behind
+> its `2>/dev/null || true`; the probe chain keeps working. If check 1 printed
+> `NO WORKING PYTHON`, stop — nothing python-based in this guide will function.
+> Claude Code runs hooks via Git Bash on Windows, so bash syntax works everywhere.
 
 > **Port note:** Step 8 detects the actual claude-mem worker port from `~/.claude-mem/settings.json`.
 > The default is `37777`, but some installs use a different port (e.g. `37701`). Note the
@@ -229,10 +239,10 @@ pipx install mempalace
 > fallback — both forms work as long as one resolves. The SessionStart hook in Phase 7f
 > already uses this fallback pattern.
 
-Verify the install resolved:
+Verify the install resolved (the CLI has no `--version` flag — probe with `status`):
 
 ```bash
-mempalace --version 2>/dev/null || python3 -m mempalace --version 2>/dev/null || python -m mempalace --version
+mempalace status >/dev/null 2>&1 && echo "CLI: OK" || python3 -m mempalace status >/dev/null 2>&1 && echo "python3 -m: OK" || python -m mempalace status >/dev/null 2>&1 && echo "python -m: OK" || py -m mempalace status >/dev/null 2>&1 && echo "py -m: OK" || echo "NOT RESOLVING"
 ```
 
 If the install fails due to missing build tools, the fix depends on platform:
@@ -327,7 +337,7 @@ Merge the following `hooks` block into `~/.claude/settings.json` (preserve any e
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -c \"\nimport json, sys, re\ndata = json.load(sys.stdin)\nprompt = (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''\npatterns = [r\\\"i(?:'d)?(?:\\\\s+would|\\\\s+want)?\\\\s+(?:like\\\\s+)?(?:you\\\\s+)?to\\\\s+remember\\\",r\\\"please\\\\s+remember\\\",r\\\"remember\\\\s+(?:that|this)\\\",r\\\"can\\\\s+you\\\\s+remember\\\",r\\\"make\\\\s+a\\\\s+(?:note|mental\\\\s+note)\\\",r\\\"keep\\\\s+(?:this\\\\s+)?in\\\\s+mind\\\",r\\\"don'?t\\\\s+forget\\\",r\\\"note\\\\s+(?:that|this|for\\\\s+future)\\\",r\\\"store\\\\s+(?:this|that)\\\\s+(?:away|in\\\\s+memory)\\\"]\nif prompt and any(re.search(p, prompt, re.IGNORECASE) for p in patterns):\n    msg = ('MEMORY REQUEST DETECTED. Analyse what the user wants remembered, classify its scope, then store it in ALL applicable systems:\\\\n'\n        '1. MEMPALACE (mcp__plugin_mempalace_mempalace__mempalace_add_drawer): Always use for any durable knowledge. Pick the right wing (project name) and room (general/decisions/src/maps/etc). For cross-project preferences use wing=user-preferences, room=feedback.\\\\n'\n        '2. LOCAL FILE MEMORY (~/.claude/projects/<project>/memory/): Write a typed .md file (feedback_*.md, project_*.md, user_*.md, reference_*.md) and add an entry to MEMORY.md. For cross-project preferences also write to ~/.claude/projects/global/memory/ (create dir if needed).\\\\n'\n        '3. CLAUDE.md: Update the project CLAUDE.md only if this is a session-critical project convention that every future session must know immediately (code style, architectural rules, critical gotchas).\\\\n'\n        '4. CLAUDE-MEM (direct write): call POST http://127.0.0.1:37777/api/memory/save with JSON body {\\\\\"project\\\\\": \\\\\"<current project>\\\\\", \\\\\"type\\\\\": \\\\\"decision\\\\\", \\\\\"text\\\\\": \\\\\"<the memory>\\\\\", \\\\\"title\\\\\": \\\\\"<short title>\\\\\"}. Use type=decision for preferences/rules, type=discovery for project-specific findings. Derive project name from the current working directory basename. If the worker is unreachable, fall back to narrating the memory clearly in your response so the Stop hook captures it from the transcript.\\\\n'\n        'After storing, confirm to the user: what was saved, which of the 4 systems it went into, and why each was chosen or skipped.')\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': msg}}))\n\" 2>/dev/null || true",
+            "command": "PY=\"\"; for c in python3 python py; do \"$c\" -c pass >/dev/null 2>&1 && { PY=\"$c\"; break; }; done; [ -z \"$PY\" ] && exit 0; \"$PY\" -c \"\nimport json, sys, re\ndata = json.load(sys.stdin)\nprompt = (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''\npatterns = [r\\\"i(?:'d)?(?:\\\\s+would|\\\\s+want)?\\\\s+(?:like\\\\s+)?(?:you\\\\s+)?to\\\\s+remember\\\",r\\\"please\\\\s+remember\\\",r\\\"remember\\\\s+(?:that|this)\\\",r\\\"can\\\\s+you\\\\s+remember\\\",r\\\"make\\\\s+a\\\\s+(?:note|mental\\\\s+note)\\\",r\\\"keep\\\\s+(?:this\\\\s+)?in\\\\s+mind\\\",r\\\"don'?t\\\\s+forget\\\",r\\\"note\\\\s+(?:that|this|for\\\\s+future)\\\",r\\\"store\\\\s+(?:this|that)\\\\s+(?:away|in\\\\s+memory)\\\"]\nif prompt and any(re.search(p, prompt, re.IGNORECASE) for p in patterns):\n    msg = ('MEMORY REQUEST DETECTED. Analyse what the user wants remembered, classify its scope, then store it in ALL applicable systems:\\\\n'\n        '1. MEMPALACE (mcp__plugin_mempalace_mempalace__mempalace_add_drawer): Always use for any durable knowledge. Pick the right wing (project name) and room (general/decisions/src/maps/etc). For cross-project preferences use wing=user-preferences, room=feedback.\\\\n'\n        '2. LOCAL FILE MEMORY (~/.claude/projects/<project>/memory/): Write a typed .md file (feedback_*.md, project_*.md, user_*.md, reference_*.md) and add an entry to MEMORY.md. For cross-project preferences also write to ~/.claude/projects/global/memory/ (create dir if needed).\\\\n'\n        '3. CLAUDE.md: Update the project CLAUDE.md only if this is a session-critical project convention that every future session must know immediately (code style, architectural rules, critical gotchas).\\\\n'\n        '4. CLAUDE-MEM (direct write): call POST http://127.0.0.1:37777/api/memory/save with JSON body {\\\"project\\\": \\\"<current project>\\\", \\\"type\\\": \\\"decision\\\", \\\"text\\\": \\\"<the memory>\\\", \\\"title\\\": \\\"<short title>\\\"}. Use type=decision for preferences/rules, type=discovery for project-specific findings. Derive project name from the current working directory basename. If the worker is unreachable, fall back to narrating the memory clearly in your response so the Stop hook captures it from the transcript.\\\\n'\n        'After storing, confirm to the user: what was saved, which of the 4 systems it went into, and why each was chosen or skipped.')\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': msg}}))\n\" 2>/dev/null || true",
             "statusMessage": "Checking for memory requests..."
           }
         ]
@@ -341,25 +351,29 @@ Merge the following `hooks` block into `~/.claude/settings.json` (preserve any e
 > If your detected `CLAUDE_MEM_PORT` from Phase 0 differs from `37777`, update that URL in the
 > `command` string before saving to `settings.json`.
 
-> **Windows:** Replace `python3` with `python` in the `command` string above before saving
-> (if Phase 0 showed that only `python` resolves on your machine).
+> **No per-platform substitution needed:** the command resolves a working interpreter at
+> run time (`python3` → `python` → `py`), so the same string works on macOS, Linux, and
+> Windows — including machines where the Store stubs shadow the real Python.
 
-**Pipe-test before saving** (verify the hook fires correctly):
+**Pipe-test after saving** — test the **full command exactly as saved** in `settings.json`,
+not a fragment. A fragment test verifies only the regex; the full command is the only thing
+that catches bash-level quoting failures (a mis-escaped quote in the command string makes
+the hook fail silently on every prompt while a fragment test still passes — this happened):
 
 ```bash
-echo '{"message": "I would like you to remember I prefer tabs over spaces"}' | python3 -c "
-import json, sys, re
-data = json.load(sys.stdin)
-prompt = (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''
-patterns = [r\"i(?:'d)?(?:\s+would|\s+want)?\s+(?:like\s+)?(?:you\s+)?to\s+remember\"]
-if prompt and any(re.search(p, prompt, re.IGNORECASE) for p in patterns):
-    print('HOOK FIRES: OK')
-else:
-    print('HOOK SILENT: check pattern')
-"
+PY=""; for c in python3 python py; do "$c" -c "pass" >/dev/null 2>&1 && { PY="$c"; break; }; done
+CMD=$("$PY" -c "
+import json, os
+d = json.load(open(os.path.expanduser('~/.claude/settings.json')))
+print(d['hooks']['UserPromptSubmit'][0]['hooks'][0]['command'])
+")
+echo '{"message": "I would like you to remember I prefer tabs over spaces"}' | bash -c "$CMD" \
+  | grep -q "MEMORY REQUEST DETECTED" && echo "HOOK FIRES: OK" || echo "HOOK BROKEN — check quoting and interpreter"
+echo '{"message": "an unrelated message"}' | bash -c "$CMD" \
+  | grep -q . && echo "FALSE POSITIVE — should be silent" || echo "NEGATIVE TEST: OK"
 ```
 
-Expected output: `HOOK FIRES: OK`
+Expected output: `HOOK FIRES: OK` then `NEGATIVE TEST: OK`
 
 ### The opposite: forgetting memories
 
@@ -397,7 +411,7 @@ After removing, confirm what was deleted and from which systems.
 Check current status:
 
 ```bash
-mempalace status 2>/dev/null || python3 -m mempalace status 2>/dev/null || python -m mempalace status
+mempalace status 2>/dev/null || python3 -m mempalace status 2>/dev/null || python -m mempalace status 2>/dev/null || py -m mempalace status
 ```
 
 **If the palace is already initialized** — skip to the identity file step below. No
@@ -426,13 +440,13 @@ is inferred from a bare `mempalace init`). Substitute the user's answer or the d
 your platform. The `--yes` flag is required in Claude Code's non-interactive shell:
 
 ```bash
-mempalace init <PATH> --yes 2>/dev/null || python3 -m mempalace init <PATH> --yes
+mempalace init <PATH> --yes 2>/dev/null || python3 -m mempalace init <PATH> --yes 2>/dev/null || python -m mempalace init <PATH> --yes 2>/dev/null || py -m mempalace init <PATH> --yes
 ```
 
 Confirm the MCP server is registered with Claude Code. Use whichever form works for the install method:
 
 ```bash
-# For pip installs (python3 -m form works):
+# For pip installs (substitute the interpreter that resolved in Phase 0 — python3, python, or py):
 claude mcp add mempalace -- python3 -m mempalace.mcp_server
 
 # For pipx installs (use the mempalace binary directly):
@@ -522,8 +536,9 @@ cross-session observations.
 First, confirm the port (detected in Phase 0 — substitute if it differs from 37777):
 
 ```bash
-# Re-detect if needed:
-python3 -c "
+# Re-detect if needed (resolve $PY with the Phase 0 probe first):
+PY=""; for c in python3 python py; do "$c" -c "pass" >/dev/null 2>&1 && { PY="$c"; break; }; done
+"$PY" -c "
 import json, os
 path = os.path.expanduser('~/.claude-mem/settings.json')
 try:
@@ -537,7 +552,7 @@ except:
 Check if it's already running (substitute your detected port if not 37777):
 
 ```bash
-curl -s http://127.0.0.1:37777/api/health | python3 -m json.tool
+curl -s http://127.0.0.1:37777/api/health
 ```
 
 If the health check returns `{"status":"ok",...}` — the worker is running. No action needed.
@@ -582,8 +597,8 @@ entities.json
 
 ```bash
 cd /path/to/project
-mempalace init . --yes 2>/dev/null || python3 -m mempalace init . --yes
-mempalace mine . 2>/dev/null || python3 -m mempalace mine .
+mempalace init . --yes 2>/dev/null || python3 -m mempalace init . --yes 2>/dev/null || python -m mempalace init . --yes 2>/dev/null || py -m mempalace init . --yes
+mempalace mine . 2>/dev/null || python3 -m mempalace mine . 2>/dev/null || python -m mempalace mine . 2>/dev/null || py -m mempalace mine .
 ```
 
 > **`--yes` is required** — `mempalace init` is interactive by default and will block with
@@ -621,11 +636,9 @@ attrib +h mempalace.yaml entities.json
 ### 7d. Create local file memory directory
 
 ```bash
-# macOS/Linux:
-mkdir -p ~/.claude/projects/$(python3 -c "import os; print(os.getcwd().replace('/', '--').lstrip('-'))")/memory
-
-# Windows (if python3 is not found, use python):
-mkdir -p ~/.claude/projects/$(python -c "import os; print(os.getcwd().replace('/', '--').replace('\\\\', '--').lstrip('-'))")/memory
+# All platforms (resolve $PY with the Phase 0 probe first):
+PY=""; for c in python3 python py; do "$c" -c "pass" >/dev/null 2>&1 && { PY="$c"; break; }; done
+mkdir -p ~/.claude/projects/$("$PY" -c "import os; print(os.getcwd().replace('\\\\', '--').replace('/', '--').lstrip('-'))")/memory
 ```
 
 Then create `MEMORY.md` in that directory:
@@ -697,12 +710,12 @@ Create or update `.claude/settings.local.json` in the project root:
         "hooks": [
           {
             "type": "command",
-            "command": "PYTHONIOENCODING=utf-8 mempalace wake-up --wing <WING_NAME> 2>/dev/null || PYTHONIOENCODING=utf-8 python3 -m mempalace wake-up --wing <WING_NAME> 2>/dev/null || true",
+            "command": "PYTHONIOENCODING=utf-8 mempalace wake-up --wing <WING_NAME> 2>/dev/null || PYTHONIOENCODING=utf-8 python3 -m mempalace wake-up --wing <WING_NAME> 2>/dev/null || PYTHONIOENCODING=utf-8 python -m mempalace wake-up --wing <WING_NAME> 2>/dev/null || PYTHONIOENCODING=utf-8 py -m mempalace wake-up --wing <WING_NAME> 2>/dev/null || true",
             "statusMessage": "Recalling <ProjectName> palace context..."
           },
           {
             "type": "command",
-            "command": "python3 -c \"\nimport urllib.request, json, os\nproject = os.path.basename(os.getcwd())\ntry:\n    settings_path = os.path.expanduser('~/.claude-mem/settings.json')\n    port = json.load(open(settings_path)).get('CLAUDE_MEM_WORKER_PORT', '37777')\nexcept:\n    port = '37777'\ntry:\n    r = urllib.request.urlopen(f'http://127.0.0.1:{port}/api/context/recent?project={project}&limit=8', timeout=3)\n    data = json.loads(r.read().decode())\n    text = ' '.join(c.get('text','') for c in data.get('content',[]) if c.get('type')=='text').strip()\n    if text and 'No previous sessions' not in text:\n        ctx = f'CLAUDE-MEM recent observations for {project}:\\n{text}'\n        print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': ctx}}))\nexcept:\n    pass\n\" 2>/dev/null || true",
+            "command": "PY=\"\"; for c in python3 python py; do \"$c\" -c pass >/dev/null 2>&1 && { PY=\"$c\"; break; }; done; [ -z \"$PY\" ] && exit 0; \"$PY\" -c \"\nimport urllib.request, json, os\nproject = os.path.basename(os.getcwd())\ntry:\n    settings_path = os.path.expanduser('~/.claude-mem/settings.json')\n    port = json.load(open(settings_path)).get('CLAUDE_MEM_WORKER_PORT', '37777')\nexcept:\n    port = '37777'\ntry:\n    r = urllib.request.urlopen(f'http://127.0.0.1:{port}/api/context/recent?project={project}&limit=8', timeout=3)\n    data = json.loads(r.read().decode())\n    text = ' '.join(c.get('text','') for c in data.get('content',[]) if c.get('type')=='text').strip()\n    if text and 'No previous sessions' not in text:\n        ctx = f'CLAUDE-MEM recent observations for {project}:\\n{text}'\n        print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': ctx}}))\nexcept:\n    pass\n\" 2>/dev/null || true",
             "statusMessage": "Loading claude-mem session history..."
           }
         ]
@@ -715,8 +728,9 @@ Create or update `.claude/settings.local.json` in the project root:
 Replace `<WING_NAME>` with the lowercase project name and `<ProjectName>` with the display
 name.
 
-> **Windows:** Replace `python3` with `python` in both `command` strings above if Phase 0
-> showed that only `python` resolves on your machine.
+> **No per-platform substitution needed:** the wake-up command falls through
+> `mempalace` → `python3 -m` → `python -m` → `py -m`, and the claude-mem command resolves
+> its interpreter at run time — the same strings work on every platform.
 
 **[ASK USER]** "What is the MemPalace wing name for this project? Suggested:
 `<lowercased directory name>`. Confirm or provide your preferred name."
@@ -724,7 +738,8 @@ name.
 Pipe-test the SessionStart claude-mem hook:
 
 ```bash
-echo '{}' | python3 -c "
+PY=""; for c in python3 python py; do "$c" -c "pass" >/dev/null 2>&1 && { PY="$c"; break; }; done
+echo '{}' | "$PY" -c "
 import urllib.request, json, os
 project = os.path.basename(os.getcwd())
 try:
@@ -904,7 +919,7 @@ the existing memory-trigger hook from Phase 8):
   "hooks": [
     {
       "type": "command",
-      "command": "python -c \"\nimport json, sys, re\ndata = json.load(sys.stdin)\nprompt = (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''\nif re.search(r'^\\\\s*/compact\\\\b', prompt, re.IGNORECASE):\n    msg = ('PRE-COMPACT SAVE REQUIRED. The user has requested /compact. Before compaction runs, you MUST save the current session to MemPalace. Execute these steps NOW, in order, before doing anything else:\\\\n'\n        '1. Call mempalace_diary_write with a thorough AAAK-compressed summary of this entire session (decisions made, code written, problems solved, context that would be lost).\\\\n'\n        '2. Call mempalace_add_drawer for any verbatim quotes, specific code snippets, or discrete facts that deserve their own drawer.\\\\n'\n        '3. Optionally call mempalace_kg_add for any new entity relationships discovered this session.\\\\n'\n        'After completing all saves, confirm to the user what was saved, then the /compact will proceed automatically.')\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': msg}}))\n\" 2>/dev/null || true",
+      "command": "PY=\"\"; for c in python3 python py; do \"$c\" -c pass >/dev/null 2>&1 && { PY=\"$c\"; break; }; done; [ -z \"$PY\" ] && exit 0; \"$PY\" -c \"\nimport json, sys, re\ndata = json.load(sys.stdin)\nprompt = (data.get('tool_input') or {}).get('message', '') or data.get('message', '') or ''\nif re.search(r'^\\\\s*/compact\\\\b', prompt, re.IGNORECASE):\n    msg = ('PRE-COMPACT SAVE REQUIRED. The user has requested /compact. Before compaction runs, you MUST save the current session to MemPalace. Execute these steps NOW, in order, before doing anything else:\\\\n'\n        '1. Call mempalace_diary_write with a thorough AAAK-compressed summary of this entire session (decisions made, code written, problems solved, context that would be lost).\\\\n'\n        '2. Call mempalace_add_drawer for any verbatim quotes, specific code snippets, or discrete facts that deserve their own drawer.\\\\n'\n        '3. Optionally call mempalace_kg_add for any new entity relationships discovered this session.\\\\n'\n        'After completing all saves, confirm to the user what was saved, then the /compact will proceed automatically.')\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': msg}}))\n\" 2>/dev/null || true",
       "statusMessage": "Preparing MemPalace save before compact..."
     }
   ]
@@ -982,23 +997,23 @@ Phase 9 or 10.
 grep -r "MEMPALACE-PATCH:precompact-passthrough-v2" ~/.claude/plugins/marketplaces/mempalace/ ~/.claude/plugins/cache/mempalace/ 2>/dev/null \
   && echo "PreCompact patch: OK" || echo "PreCompact patch: MISSING — re-apply Phase 9"
 
-grep -r "MEMPALACE-PATCH:stop-suppress-v1" ~/.claude/plugins/marketplaces/mempalace/ ~/.claude/plugins/cache/mempalace/ 2>/dev/null \
+grep -r "MEMPALACE-PATCH:stop-suppress-v2" ~/.claude/plugins/marketplaces/mempalace/ ~/.claude/plugins/cache/mempalace/ 2>/dev/null \
   && echo "Stop patch: OK" || echo "Stop patch: MISSING — re-apply Phase 10"
 
-python -c "
-import json, re
-s = open(open(\"$(echo ~)\").read().strip() + '/.claude/settings.json').read()
-d = json.loads(s)
+PY=""; for c in python3 python py; do "$c" -c "pass" >/dev/null 2>&1 && { PY="$c"; break; }; done
+"$PY" -c "
+import json, os
+d = json.load(open(os.path.expanduser('~/.claude/settings.json')))
 hooks = d.get('hooks', {}).get('UserPromptSubmit', [])
 found = any('/compact' in json.dumps(h) for h in hooks)
 print('UserPromptSubmit /compact hook: OK' if found else 'UserPromptSubmit /compact hook: MISSING — re-apply Phase 9 Part 2')
-" 2>/dev/null || echo "UserPromptSubmit /compact hook: MISSING — re-apply Phase 9 Part 2"
+" 2>/dev/null || echo "UserPromptSubmit /compact hook: CHECK FAILED — no working python; verify manually"
 ```
 
 ### Full setup checklist
 
 - [ ] Patch check above passes for both hooks
-- [ ] `mempalace status` (or `python3 -m mempalace status`) shows a palace with at least one wing
+- [ ] `mempalace status` (or `<resolved interpreter> -m mempalace status`) shows a palace with at least one wing
 - [ ] `curl -s http://127.0.0.1:37777/api/health` returns `{"status":"ok",...}`
 - [ ] `~/.claude/settings.json` contains `enabledPlugins`, `extraKnownMarketplaces`, `permissions.allow`, and `hooks.UserPromptSubmit` with **two** hooks (memory trigger + `/compact` interceptor)
 - [ ] `.claude/settings.local.json` in the project root contains `hooks.SessionStart` with 2 hooks
@@ -1041,13 +1056,13 @@ after large mining runs (thousands of drawers).
 
 3. Attempt the built-in repair:
    ```bash
-   mempalace repair 2>/dev/null || python3 -m mempalace repair
+   mempalace repair 2>/dev/null || python3 -m mempalace repair 2>/dev/null || python -m mempalace repair 2>/dev/null || py -m mempalace repair
    ```
 
 4. If repair fails, rebuild the index from SQLite (the SQLite store is the source of
    truth; HNSW is a derived index):
    ```bash
-   mempalace rebuild-index 2>/dev/null || python3 -m mempalace rebuild-index
+   mempalace rebuild-index 2>/dev/null || python3 -m mempalace rebuild-index 2>/dev/null || python -m mempalace rebuild-index 2>/dev/null || py -m mempalace rebuild-index
    ```
 
 5. If still failing, locate and delete only the HNSW segment files (not the SQLite db):

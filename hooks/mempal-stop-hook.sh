@@ -1,14 +1,24 @@
 #!/bin/bash
 # MemPalace Stop Hook — patched: silent baseline save to claude-mem
-# MEMPALACE-PATCH:stop-suppress-v1
+# MEMPALACE-PATCH:stop-suppress-v2
 # Fires after EVERY Claude response. Sentinel limits claude-mem write to once per session.
 # The mempalace hook run is intentionally skipped — its UI output cannot be suppressed.
 # Baseline auto-save ensures no session disappears silently even without an explicit diary write.
+# v2: resolves a working Python functionally (python3 → python → py). On Windows the
+# Microsoft Store stubs sit on PATH and fail with a nonzero exit — `command -v` cannot
+# detect them, so each candidate is probed with a real execution.
 
 INPUT=$(cat)
 
+# ── Resolve a working Python interpreter ─────────────────────────────────────
+PY=""
+for c in python3 python py; do
+    if "$c" -c "pass" >/dev/null 2>&1; then PY="$c"; break; fi
+done
+[ -z "$PY" ] && exit 0
+
 # ── Extract session ID ───────────────────────────────────────────────────────
-SESSION_ID=$(echo "$INPUT" | python3 -c "
+SESSION_ID=$(echo "$INPUT" | "$PY" -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -24,7 +34,7 @@ if [ "$SESSION_ID" != "unknown" ] && [ ! -f "$SENTINEL" ]; then
     touch "$SENTINEL"
     PROJECT=$(basename "$PWD")
     TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    PROJECT="$PROJECT" TIMESTAMP="$TIMESTAMP" python3 -c "
+    PROJECT="$PROJECT" TIMESTAMP="$TIMESTAMP" "$PY" -c "
 import urllib.request, json, os
 project = os.environ['PROJECT']
 timestamp = os.environ['TIMESTAMP']
