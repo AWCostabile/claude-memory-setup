@@ -93,14 +93,16 @@ if [ -f ~/.mempalace/identity.txt ] && [ -s ~/.mempalace/identity.txt ]; then
 else
     warn "~/.mempalace/identity.txt missing or empty"
 fi
-for marker in precompact-passthrough-v2 stop-suppress-v2; do
-    HITS=$(grep -rl "MEMPALACE-PATCH:$marker" ~/.claude/plugins/marketplaces/mempalace/ ~/.claude/plugins/cache/mempalace/ 2>/dev/null | wc -l | tr -d ' ')
+for hookfile in mempal-precompact-hook.sh mempal-stop-hook.sh; do
+    HITS=$(grep -l "MEMPALACE-PATCH:py-fallback-v3" \
+        ~/.claude/plugins/marketplaces/mempalace/.claude-plugin/hooks/$hookfile \
+        ~/.claude/plugins/cache/mempalace/mempalace/*/hooks/$hookfile 2>/dev/null | wc -l | tr -d ' ')
     if [ "$HITS" -ge 2 ]; then
-        ok "Hook patch $marker present in $HITS locations"
+        ok "Hook patch py-fallback-v3 in $hookfile ($HITS locations)"
     elif [ "$HITS" -eq 1 ]; then
-        warn "Hook patch $marker in only 1 location — re-apply (Phase 9/10 or scripts/sync-hooks.sh)"
+        warn "Hook patch py-fallback-v3 in $hookfile in only 1 location — run scripts/sync-hooks.sh"
     else
-        fail "Hook patch $marker MISSING — plugin update likely overwrote it (run scripts/sync-hooks.sh)"
+        fail "Hook patch py-fallback-v3 MISSING from $hookfile — plugin update likely overwrote it (run scripts/sync-hooks.sh)"
     fi
 done
 if [ -f .claude/settings.local.json ] && grep -q 'mempalace wake-up' .claude/settings.local.json; then
