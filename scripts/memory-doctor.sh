@@ -135,8 +135,9 @@ else
     fail "Worker unreachable on :$PORT — no capture, no injection (plugin starts it at session start; check ~/.claude-mem/logs/)"
 fi
 if [ -n "$HEALTH" ] && [ -n "$PY" ]; then
-    "$PY" -c "
-import json, os, urllib.request, urllib.parse, datetime
+    PYTHONIOENCODING=utf-8 "$PY" -c "
+import json, os, sys, urllib.request, urllib.parse, datetime
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')  # observation titles carry non-cp1252 chars
 project = os.path.basename(os.getcwd())
 q = urllib.parse.quote(project)
 try:
