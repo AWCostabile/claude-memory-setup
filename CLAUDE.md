@@ -19,6 +19,7 @@ Published at: `https://github.com/AWCostabile/claude-memory-setup`
 | `hooks/session-journal.sh` | Continuity layer: crash-surviving session journal (WAL), dirty-session recovery, subagent harvest, orchestration manifest |
 | `agents/` | Routed subagent stable: implementer-deep (opus/high), implementer (opus/medium), mechanic (sonnet/low) — each with the memory protocol |
 | `docs/orchestration-rubric.md` | Standing subagent routing policy, installed as a marked block in `~/.claude/CLAUDE.md` |
+| `tests/` | Continuity-layer regression suite — real-payload fixtures (provenance recorded), machine data in `.claude/test-machine.env`, fixture re-capture rig |
 | `scripts/memory-doctor.sh` | One-glance impact audit of the four memory systems + continuity layer |
 | `scripts/sync-hooks.sh` | Drift-repair loop — re-applies hook patches after plugin updates |
 | `scripts/install-continuity.sh` | Idempotent installer/repairer for the journal layer (user-level; `--check` for report-only) |

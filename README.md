@@ -144,6 +144,10 @@ claude-memory-setup/
 │   └── mechanic.md                ← routed subagent tier: sonnet/low — mechanical edits
 ├── docs/
 │   └── orchestration-rubric.md    ← standing routing policy (installs into ~/.claude/CLAUDE.md)
+├── tests/
+│   ├── run-all.sh                 ← continuity-layer regression suite (lifecycle + retention)
+│   ├── fixtures/                  ← REAL captured hook payloads + provenance.json
+│   └── event-shape-probe/         ← rig to re-capture fixtures when the CLI changes shapes
 └── scripts/
     ├── memory-doctor.sh           ← one-glance impact audit: four systems + continuity layer
     ├── sync-hooks.sh              ← drift-repair: re-applies hook patches after plugin updates
@@ -246,7 +250,9 @@ bash scripts/install-orchestration.sh
 
 Status: machine-verified end-to-end (kill → recovery injection → resumable id; mechanic
 tier confirmed running at `effort: low`; harvested reports confirmed distilled into
-claude-mem observations) on Claude Code 2.1.150/2.1.220. It has not yet been folded into
+claude-mem observations) on Claude Code 2.1.150/2.1.220, with a portable regression
+suite in `tests/` (real-payload fixtures with recorded provenance; machine-specific
+values resolve through `.claude/test-machine.env` — see `tests/README.md`). It has not yet been folded into
 AGENT.md's numbered phases — that happens after a proving period of organic use, per this
 repo's rule that the guide only teaches what has actually worked.
 

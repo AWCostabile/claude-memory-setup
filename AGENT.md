@@ -570,7 +570,9 @@ starts) — 12.x observation generation fails silently (see The Tooling section)
 update leaves the worker failing to boot with a missing-module error, run `bun install`
 inside the new version's cache directory
 (`~/.claude/plugins/cache/thedotmack/claude-mem/<version>/`) — the updater does not always
-install new dependencies.
+install new dependencies. For the full upgrade-failure playbook (stale dependencies,
+wedged version recycle, zombie socket) see Troubleshooting → "claude-mem worker won't
+start after a plugin update".
 
 If it fails to respond, the worker starts automatically when Claude Code loads the plugin.
 If it still fails after a restart:
@@ -1169,6 +1171,52 @@ after large mining runs (thousands of drawers).
 > The existing hook patches already include an HNSW repair step that fires during
 > Stop hook saves. If you see corruption after a large mine, run the repair command
 > before attempting further writes.
+
+---
+
+### claude-mem worker won't start after a plugin update
+
+Symptoms: `curl http://127.0.0.1:<port>/api/health` returns nothing after
+`claude plugin update claude-mem@thedotmack`; the newest `~/.claude-mem/logs/*.log`
+shows `Worker exited before readiness endpoint became available`, or repeated
+`Worker version mismatch — recycling stale worker` / `Worker PID file points to a live
+process` lines. Both failure modes below have now occurred on **two consecutive
+upgrades** (12.x→13.11.0 and 13.11.0→13.12.4) — treat them as expected, not exotic.
+
+**Recovery steps, in order:**
+
+1. **Get the real error** — the runner swallows it. Run the worker in the foreground:
+   ```bash
+   cd ~/.claude/plugins/cache/thedotmack/claude-mem/<new-version>/
+   timeout 20 bun scripts/worker-service.cjs start 2>&1 | head -5
+   ```
+
+2. **`Cannot find module ...`** (e.g. `zod/v3`): the update shipped a stale
+   `node_modules` — the updater does not reliably install new dependencies:
+   ```bash
+   cd ~/.claude/plugins/cache/thedotmack/claude-mem/<new-version>/ && bun install
+   node scripts/bun-runner.js scripts/worker-service.cjs start
+   ```
+
+3. **Wedged version recycle** (mismatch/recycle loop in the log, port occupied but
+   health silent): kill every claude-mem process — identify them by command line, never
+   by name alone (`node.exe` is everything on a dev machine):
+   ```bash
+   powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='bun.exe' or Name='node.exe'\" | Where-Object { \$_.CommandLine -like '*claude-mem*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force }"
+   # macOS/Linux: pkill -f claude-mem
+   rm -f ~/.claude-mem/worker.pid
+   ```
+   Then start again as in step 2. Stray helpers can linger for days — the same filter
+   is worth running even when nothing seems wrong.
+
+4. **Zombie socket** (Windows): if the port still shows LISTENING owned by a PID that
+   `Get-Process` says is gone, the kernel is holding an inherited handle — no userspace
+   fix has worked twice now. Reboot; afterwards the worker self-starts at the next
+   session start (or lazily on the first captured hook event).
+
+> Note: the plugin's SessionStart hooks match `startup|clear|compact` — **not**
+> `resume`. A resumed session lazily spawns the worker on its first tool call, so an
+> empty health check immediately after a resume is normal for a few seconds.
 
 ---
 

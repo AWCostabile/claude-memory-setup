@@ -1,0 +1,7 @@
+{
+  "captured": "2026-07-31",
+  "captured_by": "event-shape-probe rig (see tests/event-shape-probe/)",
+  "cli_version": "2.1.150",
+  "notes": "Real hook payloads from live claude -p sessions. Field names, structure, and value formats are verbatim; the OS username inside embedded paths was redacted post-capture (paths are never dereferenced by the tests, and sids are rewritten at runtime).",
+  "platform": "win32 (Git Bash)"
+}
