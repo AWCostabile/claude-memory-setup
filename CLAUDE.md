@@ -16,8 +16,13 @@ Published at: `https://github.com/AWCostabile/claude-memory-setup`
 | `AGENT.md` | Self-executing setup guide — Claude fetches and follows this |
 | `hooks/mempal-stop-hook.sh` | Hardened MemPalace Stop hook (upstream 3.6.0 + py-fallback-v3) |
 | `hooks/mempal-precompact-hook.sh` | Hardened MemPalace PreCompact hook (upstream 3.6.0 + py-fallback-v3) |
-| `scripts/memory-doctor.sh` | One-glance impact audit of all four memory systems |
+| `hooks/session-journal.sh` | Continuity layer: crash-surviving session journal (WAL), dirty-session recovery, subagent harvest, orchestration manifest |
+| `agents/` | Routed subagent stable: implementer-deep (opus/high), implementer (opus/medium), mechanic (sonnet/low) — each with the memory protocol |
+| `docs/orchestration-rubric.md` | Standing subagent routing policy, installed as a marked block in `~/.claude/CLAUDE.md` |
+| `scripts/memory-doctor.sh` | One-glance impact audit of the four memory systems + continuity layer |
 | `scripts/sync-hooks.sh` | Drift-repair loop — re-applies hook patches after plugin updates |
+| `scripts/install-continuity.sh` | Idempotent installer/repairer for the journal layer (user-level; `--check` for report-only) |
+| `scripts/install-orchestration.sh` | Idempotent installer/repairer for the agent stable + rubric (`--check` for report-only) |
 | `.gitattributes` | Enforces LF line endings on all files |
 
 ## The Two Upstream Plugins
@@ -43,6 +48,11 @@ were adopted upstream.
 - Hook patches touch **all** install locations: marketplace + every cache version dir
 - Hook commands embedded in settings JSON must be pipe-tested as the **full saved command**,
   not a fragment — fragments miss bash-level quoting breaks
+- Continuity-layer canon lives in this repo (`hooks/session-journal.sh`, `agents/`,
+  `docs/orchestration-rubric.md`) but installs **user-level** so every project is protected;
+  installers are idempotent and drift-checked at session start
+- `CLAUDE_PID` is trusted only in top-level sessions — when `CLAUDE_CODE_CHILD_SESSION=1`
+  it is inherited from the parent and must be ignored for liveness decisions
 
 ## When Updating This Repo
 
@@ -56,7 +66,10 @@ were adopted upstream.
 Complete and ready for use. Pushed to GitHub at `AWCostabile/claude-memory-setup`.
 Collaboratively built by Anthony + Claude, April 2026; under Claude's stewardship since
 July 2026 (session-start ritual: run `bash scripts/memory-doctor.sh` before adding
-features).
+features). Stewardship session #2 (2026-07-31) added the continuity layer — session
+journal (WAL), dirty-session recovery, subagent harvest, orchestration manifest, and the
+routed agent stable — machine-verified end-to-end; AGENT.md phase canonization is queued
+until it has proven itself in organic use.
 
 ## AI Session Context
 @.claude/AI_CONTEXT.md

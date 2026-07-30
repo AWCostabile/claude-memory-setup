@@ -57,7 +57,8 @@ import os, glob
 base = os.path.basename(os.getcwd()).lower()
 key = ''.join(ch if ch.isalnum() else '-' for ch in base)
 hits = [d for d in glob.glob(os.path.expanduser('~/.claude/projects/*/memory'))
-        if os.path.isdir(d) and key in os.path.dirname(d).lower().replace('_','-')]
+        if os.path.isdir(d) and key in os.path.dirname(d).lower().replace('_','-')
+        and os.path.isfile(os.path.join(d, 'MEMORY.md'))]  # scratchpad/transcript dirs embed project names but hold no index
 hits.sort(key=os.path.getmtime, reverse=True)
 print(hits[0] if hits else '')
 " 2>/dev/null)
@@ -214,6 +215,81 @@ print(groups[$idx]['hooks'][0]['command'] if len(groups) > $idx else '')
     done
 else
     fail "Cannot test global hooks (no interpreter or no ~/.claude/settings.json)"
+fi
+
+# ── 6. Continuity layer (session journals + orchestration stable) ───────────
+echo ""
+echo "-- Continuity layer (session journals + orchestration) --"
+JHOOK="$HOME/.claude/hooks/session-journal.sh"
+if [ -f "$JHOOK" ]; then
+    ok "Journal hook installed: ~/.claude/hooks/session-journal.sh"
+
+    # Wiring: all six events present in user settings
+    N_WIRED=$("$PY" -c "
+import json, os
+d = json.load(open(os.path.expanduser('~/.claude/settings.json')))
+n = sum(1 for groups in d.get('hooks', {}).values() for g in groups
+        for h in g.get('hooks', []) if 'session-journal.sh' in h.get('command', ''))
+print(n)
+" 2>/dev/null)
+    [ "$N_WIRED" = "6" ] && ok "Journal wiring present for 6 hook events" \
+        || fail "Journal wiring covers $N_WIRED/6 events — run scripts/install-continuity.sh"
+
+    # Live fire with a real-shape PostToolUse payload (payload fields, not env)
+    JTMP=$(mktemp -d 2>/dev/null || echo "$HOME/.claude/session-journals/.doctor-tmp")
+    OUT=$(printf '{"session_id":"doctor-selftest","cwd":"%s","tool_name":"Read","tool_input":{"file_path":"doctor-probe"}}' "$PWD" \
+        | CLAUDE_JOURNAL_ROOT="$JTMP" bash "$JHOOK" post-tool 2>&1)
+    if ls "$JTMP"/*/doctor-selftest.jsonl >/dev/null 2>&1; then
+        ok "Journal hook live-fire: breadcrumb written (post-tool path)"
+    else
+        fail "Journal hook live-fire FAILED — no breadcrumb written ($(printf '%s' "$OUT" | head -c 60))"
+    fi
+    rm -rf "$JTMP" 2>/dev/null
+
+    # Dirty backlog: mid-turn deaths the conservative recovery path has not salvaged
+    [ -n "$PY" ] && "$PY" -c "
+import json, os, time
+root = os.path.expanduser('~/.claude/session-journals')
+aged, total = [], 0
+if os.path.isdir(root):
+    for slug in os.listdir(root):
+        d = os.path.join(root, slug)
+        if not os.path.isdir(d): continue
+        for fn in os.listdir(d):
+            if not fn.endswith('.jsonl') or fn.endswith('.manifest.jsonl'): continue
+            total += 1
+            p = os.path.join(d, fn)
+            try:
+                evs = [json.loads(l) for l in open(p, encoding='utf-8', errors='replace') if l.strip()]
+            except Exception:
+                continue
+            real = [e for e in evs if e.get('ev') != 'salvage-offered']
+            if real and real[-1].get('ev') not in ('turn-end', 'session-end', 'session-start', 'resumed'):
+                age = (time.time() - os.path.getmtime(p)) / 3600
+                if age > 48:
+                    aged.append(f'{slug}/{fn[:13]}~ ({age/24:.1f}d)')
+if aged:
+    print(f'[WARN] {len(aged)} aged dirty journal(s) — died mid-turn, never salvaged: ' + ', '.join(aged[:3]))
+else:
+    print(f'[ OK ] No aged dirty journals ({total} tracked)')
+" 2>/dev/null
+else
+    fail "Journal hook not installed — run scripts/install-continuity.sh (mid-turn deaths lose all memory without it)"
+fi
+
+MISSING_AGENTS=""
+for a in implementer-deep implementer mechanic; do
+    [ -f "$HOME/.claude/agents/$a.md" ] || MISSING_AGENTS="$MISSING_AGENTS $a"
+done
+if [ -z "$MISSING_AGENTS" ]; then
+    ok "Agent stable installed (implementer-deep, implementer, mechanic)"
+else
+    warn "Agent stable missing:$MISSING_AGENTS — run scripts/install-orchestration.sh"
+fi
+if grep -q 'ORCHESTRATION-RUBRIC' "$HOME/.claude/CLAUDE.md" 2>/dev/null; then
+    ok "Routing rubric present in ~/.claude/CLAUDE.md"
+else
+    warn "Routing rubric absent from ~/.claude/CLAUDE.md — run scripts/install-orchestration.sh"
 fi
 
 # ── Injection footprint — what a session start costs in context tokens ──────
