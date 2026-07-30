@@ -122,6 +122,10 @@ except Exception as e:
 with open(settings_path, "w", encoding="utf-8") as f:
     json.dump(settings, f, indent=2, ensure_ascii=False)
     f.write("\n")
+import glob
+for old in sorted(glob.glob(settings_path + ".bak-continuity-*"))[:-5]:
+    try: os.remove(old)   # keep the 5 newest backups only
+    except OSError: pass
 print(f"[FIXED] settings wiring written for: {', '.join(missing)} (backup: {os.path.basename(backup)})")
 PYEOF
 rc=$?

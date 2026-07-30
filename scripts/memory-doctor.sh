@@ -250,11 +250,14 @@ print(n)
     [ -n "$PY" ] && "$PY" -c "
 import json, os, time
 root = os.path.expanduser('~/.claude/session-journals')
-aged, total = [], 0
+aged, total, attic_n = [], 0, 0
 if os.path.isdir(root):
     for slug in os.listdir(root):
         d = os.path.join(root, slug)
         if not os.path.isdir(d): continue
+        ap = os.path.join(d, 'attic')
+        if os.path.isdir(ap):
+            attic_n += len([f for f in os.listdir(ap) if f.endswith('.jsonl')])
         for fn in os.listdir(d):
             if not fn.endswith('.jsonl') or fn.endswith('.manifest.jsonl'): continue
             total += 1
@@ -271,7 +274,8 @@ if os.path.isdir(root):
 if aged:
     print(f'[WARN] {len(aged)} aged dirty journal(s) — died mid-turn, never salvaged: ' + ', '.join(aged[:3]))
 else:
-    print(f'[ OK ] No aged dirty journals ({total} tracked)')
+    extra = f', {attic_n} in attic' if attic_n else ''
+    print(f'[ OK ] No aged dirty journals ({total} tracked{extra})')
 " 2>/dev/null
 else
     fail "Journal hook not installed — run scripts/install-continuity.sh (mid-turn deaths lose all memory without it)"

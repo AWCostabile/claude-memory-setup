@@ -74,12 +74,27 @@ INJECT_CHAR_BUDGET = 4800  # ~1200 tokens
 STAMP_KEEP = 400
 REPORT_KEEP = 2000
 
+# Retention (days, env-overridable). The commit point is the turn-end stamp:
+# everything behind a journal's last stamp was summarized by claude-mem when that
+# turn completed, so a suspended journal's content is committed by definition —
+# its only residual value is resume-orientation, which dies with the transcript.
+# A dirty journal's post-stamp tail is the ONLY copy of that work, so it is never
+# silently deleted: it ages into attic/ and is pruned from there much later.
+CLOSED_KEEP_D    = float(os.environ.get("JOURNAL_CLOSED_KEEP_D", 7))
+SUSPENDED_KEEP_D = float(os.environ.get("JOURNAL_SUSPENDED_KEEP_D", 30))
+DIRTY_ATTIC_D    = float(os.environ.get("JOURNAL_DIRTY_ATTIC_D", 30))
+ATTIC_KEEP_D     = float(os.environ.get("JOURNAL_ATTIC_KEEP_D", 90))
+
 def now_iso():
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 def log_err(msg):
     try:
-        with open(os.path.join(JROOT, ".errors.log"), "a", encoding="utf-8") as f:
+        p = os.path.join(JROOT, ".errors.log")
+        if os.path.exists(p) and os.path.getsize(p) > 262144:  # rotate: keep the tail
+            lines = open(p, encoding="utf-8", errors="replace").readlines()[-200:]
+            open(p, "w", encoding="utf-8").writelines(lines)
+        with open(p, "a", encoding="utf-8") as f:
             f.write(f"{now_iso()} [{SUB}] {msg}\n")
     except Exception:
         pass
@@ -263,22 +278,21 @@ def do_session_start():
     d, jf, mf, sid, cwd = paths(p)
     source = p.get("source", "startup")
 
-    # CLAUDE_PID is only trustworthy for top-level sessions. A session spawned from
-    # inside another claude session (claude -p children, test rigs, automations)
-    # inherits the PARENT's CLAUDE_PID through the environment — recording that
-    # would make the dead child's journal look owned by a live process forever.
-    # CLAUDE_CODE_CHILD_SESSION=1 marks exactly that case; such journals take the
-    # conservative unknown-owner path and surface via the doctor instead.
+    # CLAUDE_PID is the HOST process (one VS Code host serves many sessions, and
+    # child sessions inherit their spawner's value). Its semantics are exactly
+    # what recovery needs: PID-dead proves the session's context is gone (host
+    # crashed or closed -> inject); PID-alive means the context is likely still
+    # open in a live window (a limit-hit session shows its own error banner ->
+    # stay quiet). Same-host sibling deaths therefore classify conservatively
+    # as live and surface via the doctor's aged-dirty backlog instead.
+    # (CLAUDE_CODE_CHILD_SESSION is NOT a usable discriminator — verified set
+    # even in top-level VS Code sessions.)
     pid = os.environ.get("CLAUDE_PID")
-    inherited = os.environ.get("CLAUDE_CODE_CHILD_SESSION") == "1"
-    if inherited:
-        pid = None
     pname = pcreated = None
     if pid:
         pname, pcreated = pid_identity(pid)
     header = {"t": now_iso(), "ev": "resumed" if source == "resume" else "session-start",
               "source": source, "pid": pid, "pid_name": pname, "pid_created": pcreated,
-              "pid_inherited": inherited or None,
               "cwd": cwd, "transcript": p.get("transcript_path")}
     append(jf, header)
 
@@ -299,9 +313,25 @@ def do_session_start():
                 lines.append(f"  NOTE: {len(spawns) - len(reports)} spawn(s) without a recorded report — possibly still running or lost.")
             ctx_parts.append("\n".join(lines))
 
-    # -- sibling scan for dirty sessions (skip on resume; the resumed context speaks for itself)
+    # -- sibling scan: retention first, then dirty-session salvage
+    #    (skip on resume; the resumed context speaks for itself)
     if source != "resume":
         try:
+            def remove_pair(path):
+                for extra in (path, path.replace(".jsonl", ".manifest.jsonl")):
+                    try: os.remove(extra)
+                    except OSError: pass
+
+            attic = os.path.join(d, "attic")
+            if os.path.isdir(attic):  # prune long-dead salvage candidates
+                for fn in os.listdir(attic):
+                    p = os.path.join(attic, fn)
+                    try:
+                        if (time.time() - os.path.getmtime(p)) / 86400 > ATTIC_KEEP_D:
+                            os.remove(p)
+                    except OSError:
+                        pass
+
             cands = []
             for fn in sorted(os.listdir(d)):
                 if not fn.endswith(".jsonl") or fn.endswith(".manifest.jsonl"):
@@ -311,15 +341,34 @@ def do_session_start():
                 path = os.path.join(d, fn)
                 evs = load_events(path)
                 state = tail_state(evs)
+                age_d = (time.time() - os.path.getmtime(path)) / 86400
+                head = next((e for e in evs if e.get("ev") in ("session-start",)), {})
                 if state == "closed":
-                    if time.time() - os.path.getmtime(path) > 7 * 86400:
-                        for extra in (path, path.replace(".jsonl", ".manifest.jsonl")):
-                            try: os.remove(extra)
-                            except OSError: pass
+                    if age_d > CLOSED_KEEP_D:
+                        remove_pair(path)
+                    continue
+                if state in ("suspended", "empty"):
+                    # Content committed (tail is a turn stamp); delete once the
+                    # transcript is gone (nothing left to resume) or well aged.
+                    # Safe even if later resumed: resume recreates the journal.
+                    tr = head.get("transcript")
+                    if age_d > SUSPENDED_KEEP_D or (tr and not os.path.exists(tr)):
+                        remove_pair(path)
                     continue
                 if state != "dirty":
                     continue
-                head = next((e for e in evs if e.get("ev") in ("session-start",)), {})
+                if age_d > DIRTY_ATTIC_D:
+                    # Post-stamp tail is the only copy of that work — never silently
+                    # deleted. Salvage was offered; move out of the scan path and
+                    # keep ATTIC_KEEP_D days for manual archaeology.
+                    os.makedirs(attic, exist_ok=True)
+                    for extra in (path, path.replace(".jsonl", ".manifest.jsonl")):
+                        try:
+                            if os.path.exists(extra):
+                                os.replace(extra, os.path.join(attic, os.path.basename(extra)))
+                        except OSError:
+                            pass
+                    continue
                 hpid = head.get("pid")
                 if hpid:
                     name, created = pid_identity(hpid)

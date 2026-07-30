@@ -212,8 +212,10 @@ at the exact moment token-spending saves cannot:
 - **Dirty-session recovery** — at session start, journals whose owner process is gone and
   whose tail is post-stamp breadcrumbs trigger an assess-first context injection: what the
   dead session was doing, what its subagents reported, and the `claude --resume` command
-  that brings it back. Parallel and suspended sessions are never false-flagged (owner PID
-  identity is checked; inherited PIDs in child sessions are distrusted).
+  that brings it back. Parallel and suspended sessions are never false-flagged: the owner
+  PID (the host process) is identity-checked, and PID-dead is the trigger — it proves the
+  context is gone, while PID-alive means the session's window is likely still open, so
+  recovery stays quiet and the doctor's backlog check acts as the backstop.
 - **Subagent harvest** — SubagentStop delivers each subagent's final report; the hook
   journals it, closes the orchestration manifest entry, and POSTs it to claude-mem's
   ingestion route with agent attribution. Background agents' reports — which claude-mem
@@ -223,6 +225,17 @@ at the exact moment token-spending saves cannot:
   `agents/` ships three routed tiers (implementer-deep / implementer / mechanic) whose
   model + reasoning effort + memory posture ride the agent definition, governed by the
   standing rubric in `docs/orchestration-rubric.md`.
+
+**Retention** — journals are KB-scale, but they are cleaned deliberately rather than
+accumulated. The commit point is the turn-end stamp: everything behind a journal's last
+stamp was summarized into claude-mem when that turn completed. So (all thresholds
+env-overridable): closed journals delete after 7 days; suspended journals — content
+already committed — delete after 30 days *or as soon as their transcript is gone*
+(nothing left to resume; safe even if resumed later, the journal recreates itself);
+dirty journals are never silently deleted — their post-stamp tail is the only copy of
+that work — they move to an `attic/` after 30 days and prune from there after 90. The
+error log rotates at 256KB; installers keep only their 5 newest settings backups. The
+doctor reports the dirty backlog and attic count.
 
 Install both with:
 

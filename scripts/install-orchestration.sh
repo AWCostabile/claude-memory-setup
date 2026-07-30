@@ -82,6 +82,10 @@ if content:
     backup = f"{uclaude}.bak-orchestration-{int(time.time())}"
     with open(backup, "w", encoding="utf-8") as f:
         f.write(content)
+    import glob
+    for old in sorted(glob.glob(uclaude + ".bak-orchestration-*"))[:-5]:
+        try: os.remove(old)   # keep the 5 newest backups only
+        except OSError: pass
 
 new = pattern.sub(block, content) if m else (content.rstrip() + "\n\n" if content else "") + block
 with open(uclaude, "w", encoding="utf-8") as f:

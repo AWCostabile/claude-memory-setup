@@ -51,8 +51,13 @@ were adopted upstream.
 - Continuity-layer canon lives in this repo (`hooks/session-journal.sh`, `agents/`,
   `docs/orchestration-rubric.md`) but installs **user-level** so every project is protected;
   installers are idempotent and drift-checked at session start
-- `CLAUDE_PID` is trusted only in top-level sessions — when `CLAUDE_CODE_CHILD_SESSION=1`
-  it is inherited from the parent and must be ignored for liveness decisions
+- `CLAUDE_PID` is the HOST process (one VS Code host serves many sessions; children
+  inherit their spawner's value). PID-dead proves context is gone → inject recovery;
+  PID-alive means context is likely still open in a live window → stay conservative.
+  `CLAUDE_CODE_CHILD_SESSION` is NOT a child discriminator (set in top-level VS Code too)
+- Journal retention keys off the turn-end stamp (= content committed to claude-mem):
+  closed 7d → delete; suspended 30d or transcript-gone → delete; dirty 30d → `attic/`,
+  attic 90d → prune. Dirty tails are the only copy of mid-turn work — never silently deleted
 
 ## When Updating This Repo
 
