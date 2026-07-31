@@ -2,11 +2,11 @@
 # tuneup-nudge.sh — SessionStart nudge when the memory doctor hasn't run recently.
 #
 # memory-doctor.sh stamps ~/.claude/memory-doctor.last on every run. This script prints
-# a one-line nudge when that stamp is missing or older than TUNEUP_DAYS (default 30 —
-# a monthly tune-up) and prints nothing otherwise, so it is silent in a healthy cadence.
+# a one-line nudge when that stamp is missing or older than TUNEUP_DAYS (default 14 —
+# a fortnightly tune-up) and prints nothing otherwise, so it is silent in a healthy cadence.
 # Wire it as a SessionStart hook; the output lands in Claude's context and Claude relays it.
 
-TUNEUP_DAYS="${TUNEUP_DAYS:-30}"
+TUNEUP_DAYS="${TUNEUP_DAYS:-14}"
 F="$HOME/.claude/memory-doctor.last"
 NOW=$(date +%s)
 LAST=$(cat "$F" 2>/dev/null || echo 0)

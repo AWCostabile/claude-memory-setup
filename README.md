@@ -136,11 +136,24 @@ claude-memory-setup/
 ├── AGENT.md        ← the executable setup plan (Claude reads and follows this)
 ├── hooks/
 │   ├── mempal-stop-hook.sh        ← hardened Stop hook (Phases 9–10)
-│   └── mempal-precompact-hook.sh  ← hardened PreCompact hook (Phase 9)
+│   ├── mempal-precompact-hook.sh  ← hardened PreCompact hook (Phase 9)
+│   └── session-journal.sh         ← continuity layer: crash-surviving session journal (WAL)
+├── agents/
+│   ├── implementer-deep.md        ← routed subagent tier: opus/high — design-sensitive work
+│   ├── implementer.md             ← routed subagent tier: opus/medium — standard features
+│   └── mechanic.md                ← routed subagent tier: sonnet/low — mechanical edits
+├── docs/
+│   └── orchestration-rubric.md    ← standing routing policy (installs into ~/.claude/CLAUDE.md)
+├── tests/
+│   ├── run-all.sh                 ← continuity-layer regression suite (lifecycle + retention)
+│   ├── fixtures/templates/        ← capture-derived templates ({{placeholders}}, zero machine data)
+│   └── event-shape-probe/         ← capture rig + compare-keys.py shape-drift detector
 └── scripts/
-    ├── memory-doctor.sh           ← one-glance impact audit of all four systems
+    ├── memory-doctor.sh           ← one-glance impact audit: four systems + continuity layer
     ├── sync-hooks.sh              ← drift-repair: re-applies hook patches after plugin updates
-    ├── tuneup-nudge.sh            ← monthly "tune-up due" reminder at session start
+    ├── install-continuity.sh      ← installs/repairs the session-journal layer (user-level)
+    ├── install-orchestration.sh   ← installs/repairs the agent stable + routing rubric
+    ├── tuneup-nudge.sh            ← fortnightly "tune-up due" reminder at session start
     ├── recap-nudge.sh             ← session-gap detection (stashes facts at session start)
     ├── recap-classify.sh          ← first-prompt classifier: injects a recap directive only when it helps
     └── compliance-test.sh         ← per-model directive-compliance harness (verified on sonnet + haiku)
@@ -179,7 +192,70 @@ happened on the authors' own machine. Two tools keep it healed:
   injection, stale capture, and broken hook commands — anything sync-hooks can't fix
   it names the phase that can.
 - **`scripts/tuneup-nudge.sh`** keeps the cadence: wired as a SessionStart hook, it has
-  Claude remind you when the doctor hasn't run in 30+ days, and stays silent otherwise.
+  Claude remind you when the doctor hasn't run in 14+ days, and stays silent otherwise.
+- **`scripts/install-continuity.sh`** and **`scripts/install-orchestration.sh`** are the
+  continuity layer's own drift repair: idempotent installers with a `--check` report mode,
+  wired as SessionStart hooks in this repo so the user-level copies heal at session start.
+
+## The continuity layer
+
+All four memory systems write their valuable artifacts at session *boundaries* — the Stop
+hook summarizes a completed turn, PreCompact saves before compaction. A long autonomous
+run is one giant turn, and a session killed mid-turn (usage limit, crash, power loss)
+never reaches a boundary. We verified the consequence directly: a controlled mid-turn
+kill streamed 14 tool events to claude-mem and produced **zero observations** — the
+worker's queue is transient and distillation is turn-gated. Whole orchestration runs can
+vanish from memory this way.
+
+The continuity layer is the shell-level answer — it spends zero model tokens, so it works
+at the exact moment token-spending saves cannot:
+
+- **Session journal (WAL)** — `hooks/session-journal.sh`, wired user-level on six hook
+  events, appends one breadcrumb per tool call to `~/.claude/session-journals/`. Stop
+  stamps mark turn boundaries, so the journal always knows what a crash left unrecorded.
+- **Dirty-session recovery** — at session start, journals whose owner process is gone and
+  whose tail is post-stamp breadcrumbs trigger an assess-first context injection: what the
+  dead session was doing, what its subagents reported, and the `claude --resume` command
+  that brings it back. Parallel and suspended sessions are never false-flagged: the owner
+  PID (the host process) is identity-checked, and PID-dead is the trigger — it proves the
+  context is gone, while PID-alive means the session's window is likely still open, so
+  recovery stays quiet and the doctor's backlog check acts as the backstop.
+- **Subagent harvest** — SubagentStop delivers each subagent's final report; the hook
+  journals it, closes the orchestration manifest entry, and POSTs it to claude-mem's
+  ingestion route with agent attribution. Background agents' reports — which claude-mem
+  never captures on its own — survive their orchestrator.
+- **Orchestration manifest + agent stable** — spawns and reports are tracked per session
+  and re-injected after compaction (no more re-discovering subagent state), and
+  `agents/` ships three routed tiers (implementer-deep / implementer / mechanic) whose
+  model + reasoning effort + memory posture ride the agent definition, governed by the
+  standing rubric in `docs/orchestration-rubric.md`.
+
+**Retention** — journals are KB-scale, but they are cleaned deliberately rather than
+accumulated. The commit point is the turn-end stamp: everything behind a journal's last
+stamp was summarized into claude-mem when that turn completed. So (all thresholds
+env-overridable): closed journals delete after 7 days; suspended journals — content
+already committed — delete after 30 days *or as soon as their transcript is gone*
+(nothing left to resume; safe even if resumed later, the journal recreates itself);
+dirty journals are never silently deleted — their post-stamp tail is the only copy of
+that work — they move to an `attic/` after 30 days and prune from there after 90. The
+error log rotates at 256KB; installers keep only their 5 newest settings backups. The
+doctor reports the dirty backlog and attic count.
+
+Install both with:
+
+```bash
+bash scripts/install-continuity.sh
+bash scripts/install-orchestration.sh
+```
+
+Status: machine-verified end-to-end (kill → recovery injection → resumable id; mechanic
+tier confirmed running at `effort: low`; harvested reports confirmed distilled into
+claude-mem observations) on Claude Code 2.1.150/2.1.220, with a portable regression
+suite in `tests/` (capture-derived templates rendered per-machine into gitignored
+`.claude/test-fixtures/`; machine-specific values resolve through
+`.claude/test-machine.env` — see `tests/README.md`). It has not yet been folded into
+AGENT.md's numbered phases — that happens after a proving period of organic use, per this
+repo's rule that the guide only teaches what has actually worked.
 
 ---
 

@@ -1,0 +1,7 @@
+{
+  "captured": "2026-07-31",
+  "captured_by": "event-shape-probe rig (see tests/event-shape-probe/)",
+  "cli_version": "2.1.150",
+  "notes": "templates/ are capture-derived: field names, structure, and value formats are verbatim from real hook events; machine- and session-specific values are {{PLACEHOLDERS}}. Rendered locally by tests/make-fixtures.sh into .claude/test-fixtures/ (uncommitted). Validate template shapes against fresh captures with event-shape-probe/compare-keys.py.",
+  "platform": "win32 (Git Bash)"
+}
