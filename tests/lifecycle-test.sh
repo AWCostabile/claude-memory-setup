@@ -12,14 +12,19 @@
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-HOOK="$HERE/../hooks/session-journal.sh"
-FIX="$HERE/fixtures"
+REPO_ROOT=$(cd "$HERE/.." && pwd)
+HOOK="$REPO_ROOT/hooks/session-journal.sh"
 CLAUDE_JOURNAL_ROOT=$(mktemp -d)
 export CLAUDE_JOURNAL_ROOT
 trap 'rm -rf "$CLAUDE_JOURNAL_ROOT"' EXIT
 
-T1SID="8e8cbcef-5f8b-481b-8ee7-3f34ac2d3b46"   # fixture sid: subagent probe session
-T2SID="a8428c6a-9c43-4fc7-90b3-95918de253fd"   # fixture sid: stop/session-end session
+# Fixtures are rendered fresh for this machine from the committed templates —
+# nothing machine-specific is committed; see tests/README.md.
+bash "$HERE/make-fixtures.sh" >/dev/null || { echo "FAIL fixture render"; exit 1; }
+FIX="$REPO_ROOT/.claude/test-fixtures"
+
+T1SID="fixture-session-t1"   # rendered sid: subagent-probe-derived templates
+T2SID="fixture-session-t2"   # rendered sid: stop/session-end-derived templates
 DEADSID="dead-session-0000"
 ORCHSID="orch-session-0000"
 
@@ -28,7 +33,7 @@ ORCHSID="orch-session-0000"
 . "$HERE/machine-env.sh" || exit 1
 PY="$TEST_PY"
 
-FIXVER=$(FIXPROV="$FIX/provenance.json" "$PY" -c "import json,os; print(json.load(open(os.environ['FIXPROV']))['cli_version'])" 2>/dev/null)
+FIXVER=$(FIXPROV="$HERE/fixtures/provenance.json" "$PY" -c "import json,os; print(json.load(open(os.environ['FIXPROV']))['cli_version'])" 2>/dev/null)
 if [ -n "$FIXVER" ] && [ "$TEST_CLI_VERSION" != "unknown" ] && [ "$FIXVER" != "$TEST_CLI_VERSION" ]; then
     echo "[warn] fixtures captured on CLI $FIXVER, this machine runs $TEST_CLI_VERSION — shapes may have drifted; re-capture with tests/event-shape-probe/ if failures look shape-related"
 fi

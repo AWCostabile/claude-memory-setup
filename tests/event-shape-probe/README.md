@@ -23,9 +23,15 @@ sessions. Use it when a CLI update changes event shapes (the lifecycle suite war
    python inspect.py   # summarize captured shapes
    ```
 
-3. Copy the relevant lines from `captures/*.jsonl` into `tests/fixtures/` (see the
-   existing fixture filenames for which event goes where), update
-   `tests/fixtures/provenance.json`, and run `bash tests/run-all.sh`.
+3. Check the captured shapes against the committed templates:
+
+   ```bash
+   python tests/event-shape-probe/compare-keys.py /tmp/proberig/captures
+   ```
+
+   If keys drifted, update `tests/fixtures/templates/` to match the new reality
+   (keep values as `{{PLACEHOLDERS}}` — never commit machine paths or session ids),
+   bump `tests/fixtures/provenance.json`, and run `bash tests/run-all.sh`.
 
 ## Gotchas (all learned the hard way)
 

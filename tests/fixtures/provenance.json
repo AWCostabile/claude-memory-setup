@@ -2,6 +2,6 @@
   "captured": "2026-07-31",
   "captured_by": "event-shape-probe rig (see tests/event-shape-probe/)",
   "cli_version": "2.1.150",
-  "notes": "Real hook payloads from live claude -p sessions. Field names, structure, and value formats are verbatim; the OS username inside embedded paths was redacted post-capture (paths are never dereferenced by the tests, and sids are rewritten at runtime).",
+  "notes": "templates/ are capture-derived: field names, structure, and value formats are verbatim from real hook events; machine- and session-specific values are {{PLACEHOLDERS}}. Rendered locally by tests/make-fixtures.sh into .claude/test-fixtures/ (uncommitted). Validate template shapes against fresh captures with event-shape-probe/compare-keys.py.",
   "platform": "win32 (Git Bash)"
 }
