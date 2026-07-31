@@ -24,23 +24,65 @@ order and pause at [ASK USER] prompts for my input.
 > hooks that travel with you across every project. Per-project configuration (Phase 7) can
 > be run separately for each project you work in, any time after the global setup is done.
 
-## Health check: the memory doctor
+## How to update
 
-Memory infrastructure fails **silently** — a hook dies and sessions just quietly start
-cold again. The memory doctor is the antidote: one read-only script that reports what each
-system is actually *doing* — loaded? injecting at session start? capturing? when was the
-last observation? — not what the config claims. It even live-fires your saved hook
-commands with trigger and non-trigger inputs, the only test that catches quoting and
-interpreter breaks.
+Already ran the setup on this machine, maybe a while ago? Paste the prompt below into a
+Claude Code session and it will bring everything current: hook patches, any phases that
+changed since your install, and the continuity layer — which is newer than the original
+guide and not yet part of AGENT.md's numbered phases, so a plain re-run of Quick Setup
+would miss it.
 
-```bash
-curl -s https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/master/scripts/memory-doctor.sh | bash
+```
+I ran the claude-memory-setup guide on this machine a while ago and want to update my
+setup to match the latest version of the repo. Please do the following:
+
+1. Clone https://github.com/AWCostabile/claude-memory-setup to a local folder (or
+   `git pull` if I already have a clone) — the update scripts must run from a local
+   clone, not curl.
+
+2. From the clone, run `bash scripts/memory-doctor.sh` first and show me the verdict,
+   so we know the starting state before changing anything.
+
+3. Re-apply the hardened hook patches: `bash scripts/sync-hooks.sh`.
+
+4. Install the continuity + orchestration layers — these are NEW since the original
+   setup and are not yet part of AGENT.md's numbered phases:
+     bash scripts/install-continuity.sh
+     bash scripts/install-orchestration.sh
+   (Both are idempotent, install user-level, and have a --check mode you can use first.)
+
+5. Fetch the latest guide with `curl -s
+   https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/master/AGENT.md`
+   (raw curl, not a summarizing web fetch) and diff it against what's installed on this
+   machine. Re-run only the phases where I'm behind — the guide is idempotent, but pause
+   at every [ASK USER] prompt for my input. Pay particular attention to:
+   - Phase 6: claude-mem worker must be v13+
+   - Phase 8, Preference 2: the hook-backed session-gap recap (recap-nudge.sh +
+     recap-classify.sh) replaced the old prompt-only recap
+   - Phase 9: patches should be at MEMPALACE-PATCH:py-fallback-v3
+   - Phase 11: the fortnightly tuneup-nudge SessionStart hook
+
+6. For each project I actively work in, check its .claude/settings.local.json against
+   Phase 7f and wire any hooks it's missing (sync-hooks / recap / tuneup run per-project).
+
+7. Verify: run `bash scripts/memory-doctor.sh` again, plus
+   `bash scripts/install-continuity.sh --check` and
+   `bash scripts/install-orchestration.sh --check`, and confirm everything reports OK.
 ```
 
-Run it from any project root whenever a session feels like it started cold. Expected
-output is a checklist of `[ OK ]` lines ending in `== VERDICT: all systems delivering ==`;
-any failure line names the fix. (Fun fact: v1 of this script found three independent
-silent failures on the machine it was written on.)
+> **Why a local clone this time?** First-time setup can run from curl alone, but the
+> repair tools (`sync-hooks.sh` and the continuity/orchestration installers) resolve
+> their canonical files relative to the repo — they need the clone on disk.
+
+The update starts and ends with the [memory doctor](#health-check-the-memory-doctor):
+measure before changing anything, verify after. The opening run also tells Claude which
+phases actually need re-running, so a current machine gets a short update, not a full
+walk-through.
+
+This prompt is the one-shot catch-up for a machine that has fallen behind. Day to day you
+shouldn't need it: the SessionStart wiring described in
+[Keeping the setup current](#keeping-the-setup-current) re-applies patches and heals
+drift automatically — and step 6 above is what puts that wiring in place.
 
 ## The problem
 
@@ -178,11 +220,31 @@ project to Claude with:
 
 Claude will skip straight to Phase 7.
 
+## Health check: the memory doctor
+
+Memory infrastructure fails **silently** — a hook dies and sessions just quietly start
+cold again. The memory doctor is the antidote: one read-only script that reports what each
+system is actually *doing* — loaded? injecting at session start? capturing? when was the
+last observation? — not what the config claims. It even live-fires your saved hook
+commands with trigger and non-trigger inputs, the only test that catches quoting and
+interpreter breaks.
+
+```bash
+curl -s https://raw.githubusercontent.com/AWCostabile/claude-memory-setup/master/scripts/memory-doctor.sh | bash
+```
+
+Run it from any project root whenever a session feels like it started cold. Expected
+output is a checklist of `[ OK ]` lines ending in `== VERDICT: all systems delivering ==`;
+any failure line names the fix. (Fun fact: v1 of this script found three independent
+silent failures on the machine it was written on.)
+
 ## Keeping the setup current
 
 The hook files in `hooks/` are canonical. Plugin updates overwrite the installed copies —
 that's not hypothetical; it's the designed failure mode of this architecture, and it
-happened on the authors' own machine. Two tools keep it healed:
+happened on the authors' own machine. These tools keep an already-current machine healed
+continuously; if a machine has drifted far — or predates the continuity layer entirely —
+run the one-shot [How to update](#how-to-update) prompt first, which also wires these up:
 
 - **`scripts/sync-hooks.sh`** compares the canonical hooks against every installed copy
   (marketplace + all cache version dirs) and re-applies on mismatch. Run with `--check`
